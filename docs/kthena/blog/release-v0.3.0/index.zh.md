@@ -1,18 +1,18 @@
 ---
 slug: release-v0.3.0-zh
-title: "Kthena v0.3.0 发布：生产级推理编排"
+title: "Kthena v0.3.0 Release：生产级推理编排"
 authors: [hzxuzhonghu, LiZhenCheng9527, YaoZengzeng]
 tags: [release]
 date: 2026-01-31
 ---
 
-# Kthena v0.3.0 发布：生产可用的推理编排
+# Kthena v0.3.0 Release：Production-Ready的推理编排
 
-发布日期：2026-01-31
+Release日期：2026-01-31
 
 ## 摘要
 
-v0.3.0 版本的发布标志着 Kthena 已经成为一个更加健壮且具有可扩展性的 AI 推理平台。此版本在 ModelServing、Router 和 ModelBooster 方面引入了重大增强。核心亮点包括：与 **LeaderWorkerSet** 的无缝集成、针对 PD 分离（Prefill-Decode Disaggregation）的高级**网络拓扑感知调度**，以及完善的 **Router 可观测性**框架。此外，本版本还带来了原生的 **ModelServing 版本控制**、对 **vLLM 数据并行部署**的支持，以及完整的 Router E2E测试套件，确保了生产环境的高稳定性和可靠性。
+v0.3.0 版本的Release标志着 Kthena 已经成为一个更加健壮且具有可扩展性的 AI 推理平台。此版本在 ModelServing、Router 和 ModelBooster 方面引入了重大增强。核心亮点包括：与 **LeaderWorkerSet** 的无缝集成、针对 PD 分离（Prefill-Decode Disaggregation）的高级**网络拓扑感知调度**，以及完善的 **Router 可观测性**框架。此外，本版本还带来了原生的 **ModelServing 版本控制**、对 **vLLM 数据并行部署**的支持，以及完整的 Router E2E测试套件，确保了生产环境的高稳定性和可靠性。
 
 <!-- truncate -->
 
@@ -50,7 +50,7 @@ v0.3.0 版本的发布标志着 Kthena 已经成为一个更加健壮且具有�
 **核心能力**：
 
 - **声明式拓扑策略**：直接在 `ModelServing` 规范中为整个 `ServingGroup`（`groupPolicy`）以及单个角色（`rolePolicy`）配置不同的网络拓扑限制。
-- **自动 Pod 分组**：控制器自动为 Pod 打上 `modelserving.volcano.sh/role` 和 `modelserving.volcano.sh/role-id` 标签，使 Volcano 能够形成子组（subGroup）以进行精确的拓扑感知放置。
+- **自动 Pod 分组**：Controller自动为 Pod 打上 `modelserving.volcano.sh/role` 和 `modelserving.volcano.sh/role-id` 标签，使 Volcano 能够形成子组（subGroup）以进行精确的拓扑感知放置。
 - **性能优化**：通过将相关任务部署在网络邻近的节点上，最小化角色间通信延迟并最大化带宽利用率，适用于高强度分布式推理任务。
 - **角色级 Gang 调度**：`subGroupPolicy` 还强制执行**角色级 Gang 调度**，确保属于特定角色（例如所有 `prefill-0` Pod）的所有 Pod 作为一个原子单元共同调度。这保证了角色不会出现部分部署的情况，这对于分布式推理工作负载的正确性至关重要。
 
@@ -91,8 +91,8 @@ Kthena ModelServing 中的 `partition` 字段定义了滚动更新的边界，�
 
 **相关内容**：
 
-- PR: [#599](https://github.com/volcano-sh/kthena/pull/599), [#622](https://github.com/volcano-sh/kthena/pull/622)
-- 贡献者: [@yashisrani](https://github.com/yashisrani), [@FAUST-BENCHOU](https://github.com/FAUST-BENCHOU)
+- PR & Issue: [#599](https://github.com/volcano-sh/kthena/pull/599), [#622](https://github.com/volcano-sh/kthena/pull/622), [#556](https://github.com/volcano-sh/kthena/issues/556)
+- 贡献者: [@yashisrani](https://github.com/yashisrani), [@FAUST-BENCHOU](https://github.com/FAUST-BENCHOU), [@YaoZengzeng](https://github.com/YaoZengzeng), [@katara-Jayprakash](https://github.com/katara-Jayprakash)
 
 ## 其他显著变化
 
@@ -106,16 +106,16 @@ Kthena ModelServing 中的 `partition` 字段定义了滚动更新的边界，�
 - **[Webhooks]** 在 Helm chart 中默认启用 ModelServing Webhook [#694](https://github.com/volcano-sh/kthena/pull/694) ([@VanderChen](https://github.com/VanderChen))
 - **[Infra]** 通过 `hack/local-up-kthena.sh` 实现源码一键部署 [#613](https://github.com/volcano-sh/kthena/pull/613) ([@FAUST-BENCHOU](https://github.com/FAUST-BENCHOU))
 
-### 缺陷修复
+### Bug Fixes
 
-- **[Scheduler]** 修复 LeastRequest 评分中的除零错误 [#723](https://github.com/volcano-sh/kthena/pull/723) ([@WHOIM1205](https://github.com/WHOIM1205))
+- **[Router]** 修复 LeastRequest 评分中的除零错误 [#723](https://github.com/volcano-sh/kthena/pull/723) ([@WHOIM1205](https://github.com/WHOIM1205))
 - **[Controller]** 修复角色状态转换为 Running 以恢复缩容保护 [#706](https://github.com/volcano-sh/kthena/pull/706) ([@WHOIM1205](https://github.com/WHOIM1205))
 - **[Controller]** 修复当没有 Prefill Pod 可用时 PD 调度器发生的 panic [#714](https://github.com/volcano-sh/kthena/pull/714) ([@WHOIM1205](https://github.com/WHOIM1205))
-- **[Controller]** 修复 ModelServing 控制器重启后失败 Pod 的静默恢复问题 [#697](https://github.com/volcano-sh/kthena/pull/697) ([@WHOIM1205](https://github.com/WHOIM1205))
+- **[Controller]** 修复 ModelServing Controller重启后失败 Pod 的静默恢复问题 [#697](https://github.com/volcano-sh/kthena/pull/697) ([@WHOIM1205](https://github.com/WHOIM1205))
 - **[Controller]** 修复 Headless Service 被删除后的恢复问题 [#598](https://github.com/volcano-sh/kthena/pull/598) ([@LiZhenCheng9527](https://github.com/LiZhenCheng9527))
 - **[Controller]** 修复对 gangpolicy `minRoleReplicas` 的验证 [#699](https://github.com/volcano-sh/kthena/pull/699) ([@VanderChen](https://github.com/VanderChen))
 - **[Controller]** 修复 ControllerRevision 数据扭曲问题 [#698](https://github.com/volcano-sh/kthena/pull/698) ([@VanderChen](https://github.com/VanderChen))
-- **[Controller]** 修复 ModelServing 控制器 panic [#688](https://github.com/volcano-sh/kthena/pull/688) ([@LiZhenCheng9527](https://github.com/LiZhenCheng9527))
+- **[Controller]** 修复 ModelServing Controller panic [#688](https://github.com/volcano-sh/kthena/pull/688) ([@LiZhenCheng9527](https://github.com/LiZhenCheng9527))
 - **[Controller]** 修复 ModelServing 创建期间重启导致的 Pod 数量不匹配 [#689](https://github.com/volcano-sh/kthena/pull/689) ([@hzxuzhonghu](https://github.com/hzxuzhonghu))
 - **[Controller]** 在 ModelServing 验证器中检查 `role.Name` [#684](https://github.com/volcano-sh/kthena/pull/684) ([@FAUST-BENCHOU](https://github.com/FAUST-BENCHOU))
 - **[Controller]** 修复角色删除未触发重建的 Bug [#629](https://github.com/volcano-sh/kthena/pull/629) ([@LiZhenCheng9527](https://github.com/LiZhenCheng9527))
@@ -123,6 +123,6 @@ Kthena ModelServing 中的 `partition` 字段定义了滚动更新的边界，�
 
 ## 贡献者
 
-感谢所有为此次发布做出贡献的伙伴：
+感谢所有为此次Release做出贡献的伙伴：
 
 [@hzxuzhonghu](https://github.com/hzxuzhonghu), [@LiZhenCheng9527](https://github.com/LiZhenCheng9527), [@YaoZengzeng](https://github.com/YaoZengzeng), [@git-malu](https://github.com/git-malu), [@FAUST-BENCHOU](https://github.com/FAUST-BENCHOU), [@katara-Jayprakash](https://github.com/katara-Jayprakash), [@zhiweideren](https://github.com/zhiweideren), [@aaradhychinche-alt](https://github.com/aaradhychinche-alt), [@WHOIM1205](https://github.com/WHOIM1205), [@yashisrani](https://github.com/yashisrani), [@huntersman](https://github.com/huntersman), [@VanderChen](https://github.com/VanderChen)
