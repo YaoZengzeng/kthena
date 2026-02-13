@@ -173,51 +173,51 @@ curl http://$ROUTER_IP/v1/completions \
 
 真正将 Kthena Router 与传统负载均衡器区分开的是其一套模型感知调度插件。这些插件利用实时推理引擎指标做出智能路由决策，显著提高性能。
 
-#### 4.1.1 前缀缓存感知调度
+#### 4.1.1 Prefix Cache感知调度
 
-现代推理引擎（如 vLLM 和 SGLang）实现前缀缓存，其中常用的提示前缀被缓存以避免冗余计算。前缀缓存感知插件通过将具有相似前缀的请求路由到相同的 Pod 来最大化缓存命中率。
+现代推理引擎（如 vLLM 和 SGLang）实现Prefix Cache，其中常用的Prompt前缀被缓存以避免冗余计算。Prefix Cache感知插件通过将具有相似前缀的请求路由到相同的 Pod 来最大化缓存命中率。
 
 **工作原理**：
 
-- 从传入请求中提取提示前缀
+- 从传入请求中提取Prompt前缀
 - 维护前缀到已处理它们的 Pod 的映射
 - 将具有匹配前缀的新请求路由到可能已缓存 KV 状态的 Pod
 - 显著减少重复或相似提示的首token时间（TTFT）
 
-#### 4.1.2 KV 缓存感知调度
+#### 4.1.2 KV Cache 利用率感知调度
 
-KV 缓存感知插件监控每个 Pod 的 KV 缓存利用率，并将请求路由到具有可用缓存容量的 Pod。这可以防止缓存抖动并提高整体吞吐量。
+KV Cache 利用率感知插件监控每个 Pod 的 KV 缓存利用率，并将请求路由到具有可用缓存容量的 Pod。这可以防止缓存抖动并提高整体吞吐量。
 
 **工作原理**：
 
-- Metrics Fetcher 持续轮询推理引擎 Pod 上的 `/metrics` 端点
-- 提取 KV 缓存使用百分比（例如，来自 vLLM 的 `vllm:kv_cache_usage_perc` 指标）
+- Metrics Fetcher 持续轮询推理引擎 Pod 上的 `/metrics` endpoint
+- 提取 KV Cache 使用率（例如，来自 vLLM 的 `vllm:kv_cache_usage_perc` 指标）
 - 根据可用缓存容量对 Pod 评分
 - 将新请求路由到具有足够可用缓存空间的 Pod
 
 #### 4.1.3 LoRA 亲和性调度
 
-LoRA（低秩适应）适配器能够在不重新部署基础模型的情况下实现微调的模型行为。然而，加载和卸载适配器会引入延迟。LoRA 亲和性插件最小化了这种开销。
+LoRA（低秩适应）Adapter能够在不重新部署Base Model的情况下实现微调的模型行为。然而，加载和卸载Adapter会引入延迟。LoRA 亲和性插件最小化了这种开销。
 
 **工作原理**：
 
-- 跟踪每个 Pod 上当前加载的 LoRA 适配器
+- 跟踪每个 Pod 上当前加载的 LoRA Adapter
 - 将需要特定 LoRA 的请求路由到已加载它的 Pod
-- 如果没有 Pod 已缓存适配器，则回退到具有可用适配器槽的 Pod
-- 将适配器交换延迟从数百毫秒减少到接近零
+- 如果没有 Pod 已缓存 Adapter，则回退到具有可用 Adapter 槽的 Pod
+- 将数百毫秒的 Adapter Swap 延迟减少到接近零
 
-#### 4.1.4 最小延迟调度
+#### 4.1.4 Least Latency 调度
 
-最小延迟插件根据实时延迟指标将请求路由到最快的可用 Pod。
+Least Latency 插件根据实时延迟指标将请求路由到最快的可用 Pod。
 
 **考虑的指标**：
 
 - **TTFT（首token时间）**：对流式响应和用户感知延迟很重要
 - **TPOT（每输出token时间）**：对整体生成速度至关重要
 
-#### 4.1.5 最少请求调度
+#### 4.1.5 Least Request 调度
 
-最少请求插件考虑等待处理的请求数和正在运行的请求数，以路由到最不繁忙的 Pod。
+Least Request 插件考虑等待处理的请求数和正在运行的请求数，以路由到最不繁忙的 Pod。
 
 **工作原理**：
 
@@ -232,9 +232,9 @@ LoRA（低秩适应）适配器能够在不重新部署基础模型的情况下�
 
 调度器框架按顺序运行启用的插件：
 
-1. **过滤**：插件消除不合适的 Pod（例如，缓存不足、错误的 LoRA）
-2. **评分**：插件根据其条件对剩余 Pod 评分
-3. **选择**：为请求选择得分最高的 Pod
+1. **Filter**：插件过滤不合适的 Pod（例如，缓存不足、错误的 LoRA）
+2. **Score**：插件根据其条件对剩余 Pod 评分
+3. **Select**：为请求选择得分最高的 Pod
 
 这种可组合的架构允许您根据特定的工作负载需求定制路由行为。
 
@@ -255,16 +255,16 @@ LoRA（低秩适应）适配器能够在不重新部署基础模型的情况下�
 - 具有公平共享策略的研究集群
 - 需要基于使用量的节流的 SLA 驱动系统
 
-### 4.3 预填充-解码分离支持
+### 4.3 PD分离支持
 
-对于高级部署模式，Kthena Router 原生支持预填充-解码分离（xPyD），其中计算密集型的预填充阶段与token生成解码阶段分离。
+对于高级部署模式，Kthena Router 原生支持PD分离（xPyD），其中计算密集型的Prefill阶段与token生成Decode阶段分离。
 
 **工作原理**：
 
 - 从 ModelServer CRD 识别 PD 组配置
-- 将预填充请求路由到预填充优化的 Pod
-- 通过可配置的连接器（HTTP、Redis 等）传输 KV 缓存状态
-- 将解码请求路由到解码优化的 Pod
+- 将Prefill请求路由到Prefill优化的 Pod
+- 通过可配置的连接器（HTTP、Nixl 等）传输 KV 缓存状态
+- 将Decode请求路由到Decode优化的 Pod
 - 对客户端透明地协调两阶段过程
 
 **优势**：
@@ -273,29 +273,29 @@ LoRA（低秩适应）适配器能够在不重新部署基础模型的情况下�
 - 通过为每个阶段使用专用硬件来减少延迟
 - 通过更好的资源分配提高成本效率
 
-### 4.4 基于token的速率限制
+### 4.4 基于token的RateLimit
 
-Kthena Router 提供全面的速率限制功能，以保护您的推理基础设施免受过载，并确保跨用户的公平资源分配。
+Kthena Router 提供全面的RateLimit功能，以保护您的推理基础设施免受过载，并确保跨用户的公平资源分配。
 
-- **输入token限制**：控制每个用户或 API 密钥的传入提示token速率
-- **输出token限制**：限制生成的token以管理计算成本
-- **本地速率限制**：在每个Router实例基础上实施限制。
-- **全局速率限制**：使用 Redis 等中央存储在所有Router实例之间实施共享限制。
+- **Input token限制**：控制每个用户或 API 密钥的传入prompt token速率
+- **Output token限制**：限制生成的token以管理计算成本
+- **Local RateLimit**：在每个Router实例基础上实施限制。
+- **Global RateLimit**：使用 Redis 等中央存储在所有Router实例之间实施共享限制。
 
 ### 4.5 可观测性
 
 Kthena Router 提供为生产 LLM 服务设计的全面可观测性功能：
 
-- **指标**：在 `/metrics` 端点公开详细指标，包括请求延迟、token消耗、调度器插件性能和速率限制统计信息
-- **结构化访问日志**：以 JSON 或文本格式记录完整的请求生命周期，包括路由决策、时间分解和token跟踪
-- **调试端点**：提供 `/debug/config_dump/*` API 来检查内部状态、ModelRoute/ModelServer 配置和实时 Pod 指标
-- **标准集成**：与 Prometheus、Grafana、ELK 和其他可观测性堆栈无缝协作，用于监控、告警和故障排除
+- **指标**：在 `/metrics` endpoint公开详细指标，包括请求延迟、token消耗、调度器插件性能和RateLimit统计信息
+- **结构化访问日志**：以 JSON 或文本格式记录完整的请求生命周期，包括路由决策、用时分布和token跟踪
+- **Debug endpoint**：提供 `/debug/config_dump/*` API 来检查内部状态、ModelRoute/ModelServer 配置和实时 Pod 等指标
+- **标准集成**：与 Prometheus、Grafana、ELK 等可观测性堆栈无缝协作，用于监控、告警和故障排除
 
 ## 5. 性能
 
-**Kthena Router** 中的 **ScorePlugin** 模块利用可配置的可插拔架构来实现推理请求的多维评分和智能路由。为了演示智能调度的影响，我们基于 **DeepSeek-R1-Distill-Qwen-7B** 模型构建了一个标准化的基准测试环境，以评估不同调度策略在长短系统提示场景下的性能。
+**Kthena Router** 中的 **ScorePlugin** 模块利用可配置的可插拔架构来实现推理请求的多维评分和智能路由。为了演示智能调度的影响，我们基于 **DeepSeek-R1-Distill-Qwen-7B** 模型构建了一个标准化的基准测试环境，以评估不同调度策略在长短system prompt场景下的性能。
 
-实验结果表明，在**长系统提示场景**中，**KVCacheAware Plugin + Least Request Plugin** 组合实现了 **2.73 倍的吞吐量**，并将 **TTFT 延迟降低了 73.5%**，显著优化了整体推理服务性能，验证了缓存感知调度对大规模模型推理的核心价值。
+实验结果表明，在**long system prompt场景**中，**KV Cache Aware Plugin + Least Request Plugin** 组合实现了 **2.73 倍的吞吐量**，并将 **TTFT 延迟降低了 73.5%**，显著优化了整体推理服务性能，验证了Cache感知调度对大规模模型推理的核心价值。
 
 ### 5.1 实验设置
 
@@ -318,13 +318,13 @@ Kthena Router 提供为生产 LLM 服务设计的全面可观测性功能：
 | 请求速率               | 800 req/s                               |
 | 最大并发               | 300                                     |
 
-### 5.2 长系统提示场景（4096 token）
+### 5.2 Long System Prompt Scenario（4096 token）
 
-**表 2：性能指标 - 长提示**
+**表 2：性能指标 - Long System Prompt**
 
 | 插件配置                     | 运行次数 | 成功率 (%) | 吞吐量 (req/s) | 延迟 (s) | TTFT (s) |
 | :--------------------------- | :------: | :--------: | :------------: | :------: | :------: |
-| Least Request + KVCacheAware |    3     |   100.0    |   **32.22**    | **9.22** | **0.57** |
+| Least Request + KV Cache Aware |    3     |   100.0    |   **32.22**    | **9.22** | **0.57** |
 | Least Request + Prefix Cache |    3     |   100.0    |     23.87      |  12.47   |   0.83   |
 | Random                       |    3     |   100.0    |     11.81      |  25.23   |   2.15   |
 | Least Request                |    3     |   100.0    |      9.86      |  30.13   |  12.46   |
