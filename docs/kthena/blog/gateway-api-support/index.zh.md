@@ -54,7 +54,7 @@ Gateway API Inference Extension提供了暴露 AI/ML 推理服务的标准化方
 
 借助 Gateway API 支持，用户可以在以下方案中选择：
 
-- **原生 ModelRoute/ModelServer**：Kthena 的自定义 CRD，提供 PD 拆分、加权路由和复杂调度算法等高级特性
+- **原生 ModelRoute/ModelServer**：Kthena 的自定义 CRD，提供 PD 分离、加权路由和复杂调度算法等高级特性
 - **Gateway API + Inference Extension**：标准 Kubernetes API，提供与其他网关实现的互操作性和兼容性
 
 这种灵活性使用户能够根据自身需求和基础设施约束选择最合适的方案。
@@ -462,9 +462,9 @@ curl http://${ROUTER_IP}:80/v1/completions \
 
 Gateway API 和 Gateway API Inference Extension提供了标准化、可互操作的路由能力，而 Kthena 原生的 `ModelRoute` 和 `ModelServer` CRD 则提供了更多专为 AI/ML 推理工作负载设计的实验性高级特性：
 
-### Prefill-Decode（PD）拆分
+### Prefill-Decode（PD）分离
 
-原生 ModelRoute/ModelServer 支持 PD 拆分，将计算密集型的预填充阶段与 token 生成的解码阶段分离。这一特性支持：
+原生 ModelRoute/ModelServer 支持 PD 分离，将计算密集型的prefill阶段与 token 生成的decode阶段分离。这一特性支持：
 
 - **硬件优化**：为每个阶段使用专用硬件
 - **更好的资源利用率**：将工作负载特性与硬件能力相匹配
@@ -487,7 +487,7 @@ Kthena Router 对 Gateway API 和 Gateway API Inference Extension的支持，为
 用户可以在以下方案中选择：
 
 - **Gateway API + Inference Extension**：适用于跨不同网关实现的标准化、可互操作路由
-- **原生 ModelRoute/ModelServer**：适用于需要 PD 拆分、加权路由和复杂调度算法等高级特性的场景
+- **原生 ModelRoute/ModelServer**：适用于需要 PD 分离、加权路由和复杂调度算法等高级特性的场景
 
 两种方案均完全受支持，并可在同一集群中同时使用，为不同用例和需求提供最大灵活性。
 
