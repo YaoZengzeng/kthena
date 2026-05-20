@@ -16,14 +16,15 @@
 
 **Configurations Tested:**
 
-| System | Configuration            | Description                                              |
-| ------ | ------------------------ | -------------------------------------------------------- |
-| Kthena | Least Request (LR)       | Basic load balancing without cache optimization          |
-| Kthena | LR + Prefix Cache        | Prefix-cache-aware routing with default weight           |
-| Kthena | LR + Prefix Cache (W\*2) | Prefix-cache-aware routing with doubled weight           |
-| Kthena | LR + KVCache Aware       | KV-cache-aware routing combining load and cache affinity |
-| llm-d  | Default                  | Default routing strategy                                 |
-| llm-d  | Precise KV Cache         | KV-cache-aware routing                                   |
+| System | Configuration            | Description                                                  |
+| ------ | ------------------------ | ------------------------------------------------------------ |
+| Kthena | Least Request (LR)       | Basic load balancing without cache optimization              |
+| Kthena | LR + Prefix Cache        | Prefix-cache-aware routing with default weight               |
+| Kthena | LR + Prefix Cache (W\*2) | Prefix-cache-aware routing with doubled prefix cache weight  |
+| Kthena | 2\*LR + Prefix Cache     | Prefix-cache-aware routing with doubled least-request weight |
+| Kthena | LR + KVCache Aware       | KV-cache-aware routing combining load and cache affinity     |
+| llm-d  | Default                  | Default routing strategy                                     |
+| llm-d  | Precise KV Cache         | KV-cache-aware routing                                       |
 
 ---
 
@@ -36,6 +37,7 @@ All values are **averages across 3 runs**. Lower is better for latency metrics; 
 | **Kthena LR**                       | 290.60    | 3,321.11             | 20.34    | 437.83                    | 2.92                       | 54.75                            |
 | **Kthena LR + Prefix Cache**        | 236.82    | 3,104.78             | 19.26    | 468.26                    | 3.12                       | 58.85                            |
 | **Kthena LR + Prefix Cache (W\*2)** | 248.49    | 3,096.63             | 19.12    | 457.77                    | 3.05                       | 59.36                            |
+| **Kthena 2\*LR + Prefix Cache**     | 230.39    | 3,116.90             | 19.38    | 469.01                    | 3.13                       | 57.92                            |
 | **Kthena LR + KVCache Aware**       | 304.39    | 3,133.19             | 18.99    | 465.10                    | 3.10                       | 60.26                            |
 | **llm-d Default**                   | 270.03    | 3,705.12             | 23.05    | 390.26                    | 2.60                       | 58.81                            |
 | **llm-d Precise KV Cache**          | 327.33    | 3,549.10             | 21.62    | 409.90                    | 2.73                       | 59.24                            |
@@ -49,9 +51,9 @@ All values are **averages across 3 runs**. Lower is better for latency metrics; 
 ```mermaid
 xychart-beta
     title "Output Token Throughput (tokens/sec) — Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
+    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Throughput (tokens/sec)" 350 --> 500
-    bar [437.83, 468.26, 457.77, 465.10, 390.26, 409.90]
+    bar [437.83, 468.26, 457.77, 469.01, 465.10, 390.26, 409.90]
 ```
 
 ### 3.2 Time to First Token / TTFT (ms) — Lower is Better
@@ -59,9 +61,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "TTFT (ms) — Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
+    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "TTFT (ms)" 200 --> 350
-    bar [290.60, 236.82, 248.49, 304.39, 270.03, 327.33]
+    bar [290.60, 236.82, 248.49, 230.39, 304.39, 270.03, 327.33]
 ```
 
 ### 3.3 Request Latency (ms) — Lower is Better
@@ -69,9 +71,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Request Latency (ms) — Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
+    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Latency (ms)" 2800 --> 3800
-    bar [3321.11, 3104.78, 3096.63, 3133.19, 3705.12, 3549.10]
+    bar [3321.11, 3104.78, 3096.63, 3116.90, 3133.19, 3705.12, 3549.10]
 ```
 
 ### 3.4 Inter Token Latency / ITL (ms) — Lower is Better
@@ -79,9 +81,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Inter Token Latency (ms) — Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
+    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "ITL (ms)" 17 --> 25
-    bar [20.34, 19.26, 19.12, 18.99, 23.05, 21.62]
+    bar [20.34, 19.26, 19.12, 19.38, 18.99, 23.05, 21.62]
 ```
 
 ### 3.5 Request Throughput (req/s) — Higher is Better
@@ -89,9 +91,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Request Throughput (req/s) — Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
+    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Requests/sec" 2.4 --> 3.3
-    bar [2.92, 3.12, 3.05, 3.10, 2.60, 2.73]
+    bar [2.92, 3.12, 3.05, 3.13, 3.10, 2.60, 2.73]
 ```
 
 ---
@@ -104,30 +106,30 @@ The table below shows the percentage improvement of each Kthena configuration ov
 
 #### vs. llm-d Default
 
-| Metric                 | Kthena LR     | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena LR+KVCache |
-| ---------------------- | ------------- | ------------ | ------------------ | ----------------- |
-| **Output Throughput**  | **+12.2%**    | **+20.0%**   | **+17.3%**         | **+19.2%**        |
-| **Request Throughput** | **+12.3%**    | **+20.0%**   | **+17.3%**         | **+19.2%**        |
-| **Request Latency**    | **-10.4%**    | **-16.2%**   | **-16.4%**         | **-15.4%**        |
-| **ITL**                | **-11.8%**    | **-16.4%**   | **-17.0%**         | **-17.6%**        |
-| **TTFT**               | +7.6% (worse) | **-12.3%**   | **-8.0%**          | +12.7% (worse)    |
+| Metric                 | Kthena LR     | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena 2\*LR+PC | Kthena LR+KVCache |
+| ---------------------- | ------------- | ------------ | ------------------ | --------------- | ----------------- |
+| **Output Throughput**  | **+12.2%**    | **+20.0%**   | **+17.3%**         | **+20.2%**      | **+19.2%**        |
+| **Request Throughput** | **+12.3%**    | **+20.0%**   | **+17.3%**         | **+20.4%**      | **+19.2%**        |
+| **Request Latency**    | **-10.4%**    | **-16.2%**   | **-16.4%**         | **-15.9%**      | **-15.4%**        |
+| **ITL**                | **-11.8%**    | **-16.4%**   | **-17.0%**         | **-15.9%**      | **-17.6%**        |
+| **TTFT**               | +7.6% (worse) | **-12.3%**   | **-8.0%**          | **-14.7%**      | +12.7% (worse)    |
 
 #### vs. llm-d Precise KV Cache
 
-| Metric                 | Kthena LR  | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena LR+KVCache |
-| ---------------------- | ---------- | ------------ | ------------------ | ----------------- |
-| **Output Throughput**  | **+6.8%**  | **+14.2%**   | **+11.7%**         | **+13.5%**        |
-| **Request Throughput** | **+7.0%**  | **+14.3%**   | **+11.7%**         | **+13.6%**        |
-| **Request Latency**    | **-6.4%**  | **-12.5%**   | **-12.7%**         | **-11.7%**        |
-| **ITL**                | **-5.9%**  | **-10.9%**   | **-11.6%**         | **-12.2%**        |
-| **TTFT**               | **-11.2%** | **-27.6%**   | **-24.1%**         | **-7.0%**         |
+| Metric                 | Kthena LR  | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena 2\*LR+PC | Kthena LR+KVCache |
+| ---------------------- | ---------- | ------------ | ------------------ | --------------- | ----------------- |
+| **Output Throughput**  | **+6.8%**  | **+14.2%**   | **+11.7%**         | **+14.4%**      | **+13.5%**        |
+| **Request Throughput** | **+7.0%**  | **+14.3%**   | **+11.7%**         | **+14.7%**      | **+13.6%**        |
+| **Request Latency**    | **-6.4%**  | **-12.5%**   | **-12.7%**         | **-12.2%**      | **-11.7%**        |
+| **ITL**                | **-5.9%**  | **-10.9%**   | **-11.6%**         | **-10.4%**      | **-12.2%**        |
+| **TTFT**               | **-11.2%** | **-27.6%**   | **-24.1%**         | **-29.6%**      | **-7.0%**         |
 
 ```mermaid
 xychart-beta
     title "Kthena Improvement (%) over llm-d Default — Key Metrics"
     x-axis ["Throughput", "Request/s", "Latency Reduction", "ITL Reduction", "TTFT Reduction"]
     y-axis "Improvement (%)" -5 --> 22
-    bar [20.0, 20.0, 16.4, 17.0, 12.3]
+    bar [20.2, 20.4, 16.4, 17.6, 14.7]
 ```
 
 > The chart above shows the **best Kthena configuration** improvement for each metric compared to llm-d Default.
@@ -138,11 +140,11 @@ xychart-beta
 
 ### 5.1 Throughput: Up to +20% Higher
 
-**Kthena LR + Prefix Cache** achieves **468.26 tokens/sec**, compared to llm-d Default's **390.26 tokens/sec** — a **+20.0% improvement** in output token throughput.
+**Kthena 2\*LR + Prefix Cache** achieves **469.01 tokens/sec**, compared to llm-d Default's **390.26 tokens/sec** — a **+20.2% improvement** in output token throughput.
 
 Even Kthena's baseline (Least Request without any cache optimization) delivers **437.83 tokens/sec**, which is **+12.2% higher** than llm-d Default.
 
-Against llm-d's best configuration (Precise KV Cache at 409.90 tokens/sec), Kthena LR + Prefix Cache still leads by **+14.2%**.
+Against llm-d's best configuration (Precise KV Cache at 409.90 tokens/sec), Kthena 2\*LR + Prefix Cache still leads by **+14.4%**.
 
 ### 5.2 Request Latency: Up to 16.4% Lower
 
@@ -156,11 +158,11 @@ All four Kthena configurations deliver request latency below **3,350 ms**, while
 
 All Kthena configurations keep ITL below **20.5 ms**, while llm-d Default runs at **23.05 ms** and llm-d Precise KV at **21.62 ms**.
 
-### 5.4 TTFT: Up to 27.6% Lower (with Prefix Cache)
+### 5.4 TTFT: Up to 30% Lower (with Prefix Cache)
 
-**Kthena LR + Prefix Cache** achieves a TTFT of **236.82 ms**, compared to llm-d Precise KV Cache's **327.33 ms** — a **27.6% reduction**. This is the single largest improvement observed in the benchmark.
+**Kthena 2\*LR + Prefix Cache** achieves the lowest TTFT of **230.39 ms**, compared to llm-d Precise KV Cache's **327.33 ms** — a **29.6% reduction**. This is the single largest improvement observed in the benchmark.
 
-Against llm-d Default (270.03 ms), Kthena LR + Prefix Cache still delivers a **12.3% reduction** in TTFT.
+Against llm-d Default (270.03 ms), Kthena 2\*LR + Prefix Cache delivers a **14.7% reduction** in TTFT.
 
 > **Note:** Without prefix cache optimization, Kthena's TTFT (290.60 ms for LR, 304.39 ms for KVCache Aware) is slightly higher than llm-d Default (270.03 ms). The advantage emerges specifically when prefix cache routing is enabled.
 
@@ -173,6 +175,7 @@ Kthena configurations show significantly lower standard deviation in request lat
 | Kthena LR                       | 1,049.46             |
 | Kthena LR + Prefix Cache        | 1,002.54             |
 | Kthena LR + Prefix Cache (W\*2) | 988.30               |
+| Kthena 2\*LR + Prefix Cache     | 983.71               |
 | Kthena LR + KVCache Aware       | 1,076.22             |
 | llm-d Default                   | 1,770.69             |
 | llm-d Precise KV Cache          | 1,560.23             |
@@ -210,12 +213,12 @@ Kthena sustains **513.72 tokens/sec** at concurrency 20 with KVCache Aware routi
 
 | Optimization Goal                    | Best Kthena Config       | Improvement vs llm-d Default           |
 | ------------------------------------ | ------------------------ | -------------------------------------- |
-| **Maximum Throughput**               | LR + Prefix Cache        | +20.0% output tokens/sec               |
-| **Lowest TTFT**                      | LR + Prefix Cache        | -12.3% avg, -27.6% vs llm-d Precise KV |
+| **Maximum Throughput**               | 2\*LR + Prefix Cache     | +20.2% output tokens/sec               |
+| **Lowest TTFT**                      | 2\*LR + Prefix Cache     | -14.7% avg, -29.6% vs llm-d Precise KV |
 | **Lowest ITL / Smoothest Streaming** | LR + KVCache Aware       | -17.6% ITL                             |
 | **Lowest Request Latency**           | LR + Prefix Cache (W\*2) | -16.4%                                 |
 | **Best Tail Latency (p99)**          | LR + Prefix Cache        | -28.4% request latency p99             |
-| **Most Consistent Latency**          | LR + Prefix Cache (W\*2) | ~44% lower std dev                     |
+| **Most Consistent Latency**          | 2\*LR + Prefix Cache     | ~44% lower std dev                     |
 
 ---
 
@@ -223,10 +226,10 @@ Kthena sustains **513.72 tokens/sec** at concurrency 20 with KVCache Aware routi
 
 Across all key LLM serving metrics, **Kthena consistently outperforms llm-d** in the multi-turn conversation workload at concurrency 10:
 
-- **Output throughput:** Kthena delivers **12–20% higher throughput** depending on configuration, with the best result from LR + Prefix Cache at **468.26 tokens/sec** (vs. llm-d's best of 409.90).
+- **Output throughput:** Kthena delivers **12–20% higher throughput** depending on configuration, with the best result from 2\*LR + Prefix Cache at **469.01 tokens/sec** (vs. llm-d's best of 409.90).
 - **Request latency:** Kthena achieves **10–16% lower average latency** and **~28% lower p99 tail latency**, providing both faster and more predictable responses.
 - **Inter token latency:** Kthena reduces ITL by **12–18%**, directly improving the perceived streaming speed for interactive users.
-- **TTFT:** With prefix cache routing enabled, Kthena achieves **12–28% lower TTFT** than llm-d configurations, ensuring faster time-to-first-response.
+- **TTFT:** With prefix cache routing enabled, Kthena achieves **15–30% lower TTFT** than llm-d configurations, ensuring faster time-to-first-response.
 - **Consistency:** Kthena's latency standard deviation is **~40–44% lower** than llm-d, indicating significantly more stable performance under load.
 
-The strongest advantage scenario is **Kthena LR + Prefix Cache vs. llm-d Default**, where Kthena simultaneously achieves **+20% throughput, -16% latency, -12% TTFT, and -16% ITL**.
+The strongest advantage scenario is **Kthena 2\*LR + Prefix Cache vs. llm-d Default**, where Kthena simultaneously achieves **+20% throughput, -16% latency, -15% TTFT, and -16% ITL**.
