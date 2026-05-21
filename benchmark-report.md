@@ -233,3 +233,65 @@ Across all key LLM serving metrics, **Kthena consistently outperforms llm-d** in
 - **Consistency:** Kthena's latency standard deviation is **~40–44% lower** than llm-d, indicating significantly more stable performance under load.
 
 The strongest advantage scenario is **Kthena 2\*LR + Prefix Cache vs. llm-d Default**, where Kthena simultaneously achieves **+20% throughput, -16% latency, -15% TTFT, and -16% ITL**.
+
+
+### 分析
+
+基于对 prefixcache.log 中1000个请求的详细打分日志和路由代码的分析，总结如下：
+
+一、总体统计
+指标	数值
+总请求数	1000
+Prefix Cache 命中（至少1个pod得分>0）	901 (90.1%)
+Prefix Cache 未命中（所有pod得分=0）	99 (首轮请求)
+Pod 分配：pod-3 / pod-4 / pod-5	335 / 325 / 340 (均匀)
+二、权重配置分析
+配置：LR权重=2，Prefix权重=1，理论最大贡献：LR=200，Prefix=100
+
+实际打分冲突解决：
+
+Prefix偏好的pod最终被选中：888/899次 (98.8%)
+LR偏好的pod最终被选中：仅10次
+原因：LR分数通常较低，无法有效对抗Prefix
+
+最常见的LR分数模式（3个pod的得分）：
+
+[50, 25, 0]: 490次 (49%) — 对应 4/3/3 inflight 分布
+[0, 0, 0]: 224次 (22%) — 所有pod负载相同
+[97-99, 96-98, 0]: ~160次 — 某pod有waiting请求时
+关键算术：
+
+最常见场景 [50,25,0]：如果cache在最忙pod(LR=0)上，该pod最终得分= 0×2+100×1=100，而最空闲pod= 50×2+0×1=100 → 平局（prefix仍可能胜出）
+所有pod均匀 [0,0,0]：prefix pod = 100，其他 = 0 → prefix完胜
+仅在某pod有waiting请求时(LR≈97-99)：97×2=194 > 100 → LR才能真正压过prefix
+三、Prefix Cache 插件的核心问题
+1. 分数完全二值化（只有0或100）
+
+在1000个请求中，prefix cache从未给出中间分数。原因：
+
+maxBlocksToMatch=128, blockSizeToHash=64 → 只hash前 8192 字节
+你的测试 INPUT_TOKENS_MEAN=2000，第一轮prompt≈2000 tokens × 4 chars/token = ~8000 chars，已经接近或超过 8192 字节的cap
+从第二轮开始，每个请求的前8192字节（128 blocks）都与上一轮完全相同（因为是相同的对话前缀）
+因此每次要么 100%匹配（同一conversation的pod），要么0%（其他pod）
+结论：在多轮对话场景中，prefix cache退化为纯session affinity（会话粘性），失去了按prefix匹配长度做梯度打分的能力。
+
+2. 有8个请求出现了2个pod同时得分100
+
+这发生在某个conversation因LR赢了一次被路由到另一个pod后，两个pod都缓存了该conversation的hashes。后续请求就会看到2个pod都能匹配。虽然数量不多（8/1000），但说明cache没有做旧pod的eviction。
+
+四、权重是否有问题？
+当前权重(2:1)在你的场景下基本等同于prefix cache全权决定路由。 原因是：
+
+3个pod+10并发，LR的区分度很低（最常见差距只有1个请求 → LR max score = 50）
+Prefix score是二值的(0/100)，所以100×1=100 ≥ 50×2=100
+只有当某pod出现waiting请求时（LR score接近100），LR权重才能有效覆盖prefix
+这意味着你的配置实际行为更接近 "pure prefix affinity with LR as tie-breaker"，而不是 "LR为主、prefix为辅"。
+
+五、建议
+如果期望LR有更强的影响力：将权重调整为 LR:Prefix = 3:1 或 4:1，确保即使1个请求的差距（LR=50）也能压过prefix（50×3=150 > 100）。
+
+Prefix Cache的根本问题：对于 INPUT_TOKENS_MEAN=2000 的多轮场景，由于 maxBlocksToMatch=128 的限制，prefix cache退化为session affinity。可以考虑：
+
+增大 maxBlocksToMatch（但增加计算开销）
+或者从prompt末尾开始hash（而不是开头），这样能区分不同轮次的新内容
+当前的平衡结果：从benchmark数据看，"2×LR + Prefix"配置的TTFT p50=216ms、Throughput=472 tok/s 已经是最佳配置之一。Pod分配也非常均匀(335/325/340)。负载均衡在宏观上没有问题——真正的优化空间在于prefix cache能否给出梯度分数来做更智能的路由决策。
