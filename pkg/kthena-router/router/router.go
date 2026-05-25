@@ -745,9 +745,12 @@ func (r *Router) proxy(
 		pod := ctx.BestPods[i]
 		podName := types.NamespacedName{Namespace: pod.Pod.Namespace, Name: pod.Pod.Name}
 
-		// Track this request as in-flight to the chosen pod. This is instant and
-		// feeds the scheduler immediately, avoiding the ~1 s engine-metrics lag.
-		r.store.IncrPodOnFlightRequests(podName)
+		// Track this request as in-flight to the chosen pod. Skip for the
+		// pre-incremented candidate — the scheduler already bumped its counter
+		// to close the TOCTOU window between scoring and dispatching.
+		if !(ctx.PreIncremented && i == ctx.PreIncrementedIdx) {
+			r.store.IncrPodOnFlightRequests(podName)
+		}
 
 		// Increment upstream request count with both modelServer and modelRoute
 		r.metrics.IncActiveUpstreamRequests(modelServerName, modelRouteName)
@@ -1086,11 +1089,23 @@ func (r *Router) proxyToPDDisaggregated(
 		// at the precise point each phase starts and ends.
 		prefillPodName := types.NamespacedName{Namespace: ctx.PrefillPods[i].Pod.Namespace, Name: ctx.PrefillPods[i].Pod.Name}
 		decodePodName := types.NamespacedName{Namespace: ctx.DecodePods[i].Pod.Namespace, Name: ctx.DecodePods[i].Pod.Name}
+
+		// For the pre-incremented pair the scheduler already bumped both counters,
+		// so the Incr hooks become no-ops to avoid double-counting.
+		preIncr := ctx.PreIncremented && i == ctx.PreIncrementedIdx
 		hooks := &connectors.OnFlightHooks{
-			IncrPrefill: func() { r.store.IncrPodOnFlightRequests(prefillPodName) },
+			IncrPrefill: func() {
+				if !preIncr {
+					r.store.IncrPodOnFlightRequests(prefillPodName)
+				}
+			},
 			DecrPrefill: func() { r.store.DecrPodOnFlightRequests(prefillPodName) },
-			IncrDecode:  func() { r.store.IncrPodOnFlightRequests(decodePodName) },
-			DecrDecode:  func() { r.store.DecrPodOnFlightRequests(decodePodName) },
+			IncrDecode: func() {
+				if !preIncr {
+					r.store.IncrPodOnFlightRequests(decodePodName)
+				}
+			},
+			DecrDecode: func() { r.store.DecrPodOnFlightRequests(decodePodName) },
 		}
 
 		// Execute the PD disaggregated proxy operation

@@ -96,7 +96,7 @@ func (l *LeastRequest) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 		// Estimate queued requests as max(onFlight - running, 0). The engine-reported
 		// running count has a poll lag (~1 s), so this may briefly over-count, but
 		// it provides a leading indicator of queue build-up at the pod.
-		base := float64(info.GetOnFlightRequestNum()) + 100*math.Max(float64(info.GetOnFlightRequestNum())-float64(info.GetRequestRunningNum()), 0)
+		base := float64(info.GetOnFlightRequestNum()) + 4*math.Max(float64(info.GetOnFlightRequestNum())-float64(info.GetRequestRunningNum()), 0)
 		baseScores[info] = base
 		if base > maxScore {
 			maxScore = base
