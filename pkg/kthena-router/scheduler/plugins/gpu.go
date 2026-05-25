@@ -17,6 +17,8 @@ limitations under the License.
 package plugins
 
 import (
+	"k8s.io/klog/v2"
+
 	"github.com/volcano-sh/kthena/pkg/kthena-router/datastore"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/scheduler/framework"
 )
@@ -41,8 +43,11 @@ func (g *GPUCacheUsage) Name() string {
 func (g *GPUCacheUsage) Score(ctx *framework.Context, pods []*datastore.PodInfo) map[*datastore.PodInfo]int {
 	scoreResults := make(map[*datastore.PodInfo]int)
 	for _, info := range pods {
-		score := int((1.0 - info.GetGPUCacheUsage()) * 100)
+		gpuUsage := info.GetGPUCacheUsage()
+		score := int((1.0 - gpuUsage) * 100)
 		scoreResults[info] = score
+		klog.V(4).Infof("[gpu-usage] Score pod %s/%s: gpuCacheUsage=%.4f, score=%d",
+			info.Pod.Namespace, info.Pod.Name, gpuUsage, score)
 	}
 
 	return scoreResults

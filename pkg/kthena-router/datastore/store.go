@@ -64,7 +64,7 @@ var (
 const (
 	// Configuration constants for fairness scheduling
 	defaultQueueQPS = 100
-	uppdateInterval = 1 * time.Second
+	uppdateInterval = 50 * time.Millisecond
 
 	// onFlightSyncInterval caps Redis read traffic from SyncOnFlightCounts.
 	// At most one HMGET is issued per interval regardless of request rate;

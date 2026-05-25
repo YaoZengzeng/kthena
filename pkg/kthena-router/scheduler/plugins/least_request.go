@@ -69,9 +69,13 @@ func (l *LeastRequest) Name() string {
 
 func (l *LeastRequest) Filter(ctx *framework.Context, pods []*datastore.PodInfo) []*datastore.PodInfo {
 	return slices.FilterInPlace(pods, func(info *datastore.PodInfo) bool {
-		// Filter on engine-reported waiting queue: catches backlog the router
-		// cannot observe (requests already inside the engine but not yet running).
-		return info.GetRequestWaitingNum() < float64(l.maxWaitingRequests)
+		waiting := info.GetRequestWaitingNum()
+		pass := waiting < float64(l.maxWaitingRequests)
+		if !pass {
+			klog.V(4).Infof("[least-request] Filter OUT pod %s/%s: waitingNum=%.1f >= maxWaiting=%d",
+				info.Pod.Namespace, info.Pod.Name, waiting, l.maxWaitingRequests)
+		}
+		return pass
 	})
 }
 
@@ -93,14 +97,16 @@ func (l *LeastRequest) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 	baseScores := make(map[*datastore.PodInfo]float64)
 	maxScore := 0.0
 	for _, info := range pods {
-		// Estimate queued requests as max(onFlight - running, 0). The engine-reported
-		// running count has a poll lag (~1 s), so this may briefly over-count, but
-		// it provides a leading indicator of queue build-up at the pod.
-		base := float64(info.GetOnFlightRequestNum()) + 4*math.Max(float64(info.GetOnFlightRequestNum())-float64(info.GetRequestRunningNum()), 0)
+		onFlight := float64(info.GetOnFlightRequestNum())
+		running := float64(info.GetRequestRunningNum())
+		estimatedWaiting := math.Max(onFlight-running, 0)
+		base := onFlight + 4*estimatedWaiting
 		baseScores[info] = base
 		if base > maxScore {
 			maxScore = base
 		}
+		klog.V(4).Infof("[least-request] Score pod %s/%s: onFlight=%.0f, running=%.0f, estimatedWaiting=%.0f, base=%.1f",
+			info.Pod.Namespace, info.Pod.Name, onFlight, running, estimatedWaiting, base)
 	}
 
 	// Normalise to [0, 100]: the least-loaded pod gets 100.
@@ -110,6 +116,8 @@ func (l *LeastRequest) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 			score = ((maxScore - baseScores[info]) / maxScore) * 100
 		}
 		scoreResults[info] = int(score)
+		klog.V(4).Infof("[least-request] Final score pod %s/%s: base=%.1f, maxBase=%.1f, normalizedScore=%d",
+			info.Pod.Namespace, info.Pod.Name, baseScores[info], maxScore, int(score))
 	}
 
 	return scoreResults
