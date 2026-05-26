@@ -228,6 +228,13 @@ type Store interface {
 	// the given pod. Must be called once the response is received (or the request fails).
 	DecrPodOnFlightRequests(podName types.NamespacedName)
 
+	// AddPodOnFlightInputTokens atomically adds the given number of input tokens to
+	// the in-flight token counter for the given pod.
+	AddPodOnFlightInputTokens(podName types.NamespacedName, tokens int64)
+	// SubPodOnFlightInputTokens atomically subtracts the given number of input tokens
+	// from the in-flight token counter for the given pod.
+	SubPodOnFlightInputTokens(podName types.NamespacedName, tokens int64)
+
 	// GetTokenCount returns the token count for a user and model
 	GetTokenCount(userId, modelName string) (float64, error)
 	// UpdateTokenCount updates token usage for a user and model
@@ -297,6 +304,12 @@ type PodInfo struct {
 	// When a Redis-backed OnFlightCounter is configured on the store this field is also
 	// kept in sync with the global Redis counter so it reflects cross-router traffic.
 	onFlightRequestNum atomic.Int64
+
+	// onFlightInputTokenNum tracks the total number of input tokens for requests
+	// actively in-flight from the router to this pod.
+	// Updated atomically when a request is dispatched (incremented by input token count)
+	// and when the response is received (decremented by the same amount).
+	onFlightInputTokenNum atomic.Int64
 
 	mutex sync.RWMutex // Protects concurrent access to metrics, models and modelServer fields
 	// Protected fields - use accessor methods for thread-safe access
@@ -635,6 +648,28 @@ func (s *store) DecrPodOnFlightRequests(podName types.NamespacedName) {
 		}
 	}
 	podInfo.DecrOnFlightRequests()
+}
+
+// AddPodOnFlightInputTokens atomically adds the given number of input tokens to
+// the in-flight token counter for the given pod.
+func (s *store) AddPodOnFlightInputTokens(podName types.NamespacedName, tokens int64) {
+	value, ok := s.pods.Load(podName)
+	if !ok {
+		klog.V(4).Infof("AddPodOnFlightInputTokens: pod %s not found in store", podName)
+		return
+	}
+	value.(*PodInfo).AddOnFlightInputTokens(tokens)
+}
+
+// SubPodOnFlightInputTokens atomically subtracts the given number of input tokens
+// from the in-flight token counter for the given pod.
+func (s *store) SubPodOnFlightInputTokens(podName types.NamespacedName, tokens int64) {
+	value, ok := s.pods.Load(podName)
+	if !ok {
+		klog.V(4).Infof("SubPodOnFlightInputTokens: pod %s not found in store", podName)
+		return
+	}
+	value.(*PodInfo).SubOnFlightInputTokens(tokens)
 }
 
 func (s *store) AddOrUpdateModelServer(ms *aiv1alpha1.ModelServer, pods sets.Set[types.NamespacedName]) error {
@@ -1592,6 +1627,29 @@ func (p *PodInfo) SetOnFlightRequestNum(v int64) {
 // by this router instance (or globally, if a Redis counter is configured).
 func (p *PodInfo) GetOnFlightRequestNum() int64 {
 	return p.onFlightRequestNum.Load()
+}
+
+// AddOnFlightInputTokens atomically adds the given number of input tokens to
+// the in-flight token counter and returns the new value.
+func (p *PodInfo) AddOnFlightInputTokens(v int64) int64 {
+	return p.onFlightInputTokenNum.Add(v)
+}
+
+// SubOnFlightInputTokens atomically subtracts the given number of input tokens
+// from the in-flight token counter and returns the new value.
+func (p *PodInfo) SubOnFlightInputTokens(v int64) int64 {
+	return p.onFlightInputTokenNum.Add(-v)
+}
+
+// SetOnFlightInputTokenNum atomically stores a new value for the in-flight
+// input token counter.
+func (p *PodInfo) SetOnFlightInputTokenNum(v int64) {
+	p.onFlightInputTokenNum.Store(v)
+}
+
+// GetOnFlightInputTokenNum returns the current in-flight input token count.
+func (p *PodInfo) GetOnFlightInputTokenNum() int64 {
+	return p.onFlightInputTokenNum.Load()
 }
 
 // GetTPOT returns the time per output token

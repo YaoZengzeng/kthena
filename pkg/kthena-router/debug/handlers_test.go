@@ -330,6 +330,10 @@ func (m *MockStore) IncrPodOnFlightRequests(podName types.NamespacedName) {}
 
 func (m *MockStore) DecrPodOnFlightRequests(podName types.NamespacedName) {}
 
+func (m *MockStore) AddPodOnFlightInputTokens(podName types.NamespacedName, tokens int64) {}
+
+func (m *MockStore) SubPodOnFlightInputTokens(podName types.NamespacedName, tokens int64) {}
+
 func newTestContext(params gin.Params) (*gin.Context, *httptest.ResponseRecorder) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

@@ -189,10 +189,14 @@ func (s *SchedulerImpl) Schedule(ctx *framework.Context, pods []*datastore.PodIn
 			if ctx.PrefillPods[i] != nil && ctx.DecodePods[i] != nil {
 				prefillPod := ctx.PrefillPods[i]
 				decodePod := ctx.DecodePods[i]
-				s.store.IncrPodOnFlightRequests(types.NamespacedName{
-					Namespace: prefillPod.Pod.Namespace, Name: prefillPod.Pod.Name})
-				s.store.IncrPodOnFlightRequests(types.NamespacedName{
-					Namespace: decodePod.Pod.Namespace, Name: decodePod.Pod.Name})
+				prefillPodName := types.NamespacedName{
+					Namespace: prefillPod.Pod.Namespace, Name: prefillPod.Pod.Name}
+				decodePodName := types.NamespacedName{
+					Namespace: decodePod.Pod.Namespace, Name: decodePod.Pod.Name}
+				s.store.IncrPodOnFlightRequests(prefillPodName)
+				s.store.AddPodOnFlightInputTokens(prefillPodName, int64(ctx.InputTokens))
+				s.store.IncrPodOnFlightRequests(decodePodName)
+				s.store.AddPodOnFlightInputTokens(decodePodName, int64(ctx.InputTokens))
 				ctx.PreIncremented = true
 				ctx.PreIncrementedIdx = i
 				break
@@ -213,6 +217,7 @@ func (s *SchedulerImpl) Schedule(ctx *framework.Context, pods []*datastore.PodIn
 		pod := ctx.BestPods[0]
 		podName := types.NamespacedName{Namespace: pod.Pod.Namespace, Name: pod.Pod.Name}
 		s.store.IncrPodOnFlightRequests(podName)
+		s.store.AddPodOnFlightInputTokens(podName, int64(ctx.InputTokens))
 		ctx.PreIncremented = true
 		ctx.PreIncrementedIdx = 0
 	}

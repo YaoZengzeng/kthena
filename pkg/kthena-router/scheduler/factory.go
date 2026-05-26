@@ -74,6 +74,9 @@ func registerDefaultPlugins(registry *PluginRegistry) {
 	registry.registerScorePlugin(plugins.LeastRequestPluginName, func(args runtime.RawExtension) framework.ScorePlugin {
 		return plugins.NewLeastRequest(args)
 	})
+	registry.registerScorePlugin(plugins.LeastTokenPluginName, func(args runtime.RawExtension) framework.ScorePlugin {
+		return plugins.NewLeastToken(args)
+	})
 	registry.registerScorePlugin(plugins.RandomPluginName, func(args runtime.RawExtension) framework.ScorePlugin {
 		return plugins.NewRandom(args)
 	})
@@ -88,6 +91,9 @@ func registerDefaultPlugins(registry *PluginRegistry) {
 	// filterPlugin
 	registry.registerFilterPlugin(plugins.LeastRequestPluginName, func(args runtime.RawExtension) framework.FilterPlugin {
 		return plugins.NewLeastRequest(args)
+	})
+	registry.registerFilterPlugin(plugins.LeastTokenPluginName, func(args runtime.RawExtension) framework.FilterPlugin {
+		return plugins.NewLeastToken(args)
 	})
 	registry.registerFilterPlugin(plugins.LoraAffinityPluginName, func(args runtime.RawExtension) framework.FilterPlugin {
 		return plugins.NewLoraAffinity()

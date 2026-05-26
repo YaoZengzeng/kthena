@@ -57,8 +57,9 @@ import (
 
 const (
 	// Context keys for gin context
-	GatewayKey = "gatewayKey"
-	PromptKey  = "promptKey" // store parsed ChatMessage, which will be reused
+	GatewayKey     = "gatewayKey"
+	PromptKey      = "promptKey" // store parsed ChatMessage, which will be reused
+	InputTokensKey = "inputTokensKey"
 )
 
 func getEnvBool(key string, fallback bool) bool {
@@ -265,6 +266,9 @@ func (r *Router) HandlerFunc() gin.HandlerFunc {
 			inputTokens = len(promptStr) / 4 // fallback estimation
 		}
 
+		// Store input tokens in gin context for use in scheduling and proxy
+		c.Set(InputTokensKey, inputTokens)
+
 		// Calculate and set input tokens for access log
 		accesslog.SetTokenCounts(c, inputTokens, 0)
 
@@ -441,11 +445,20 @@ func (r *Router) doLoadbalance(c *gin.Context, modelRequest ModelRequest) {
 		pdGroup = modelServer.Spec.WorkloadSelector.PDGroup
 	}
 
+	// Get input tokens from gin context
+	var inputTokens int
+	if v, exists := c.Get(InputTokensKey); exists {
+		if tokens, ok := v.(int); ok {
+			inputTokens = tokens
+		}
+	}
+
 	ctx := &framework.Context{
 		Model:           modelName,
 		Prompt:          prompt,
 		ModelServerName: modelServerName,
 		PDGroup:         pdGroup,
+		InputTokens:     inputTokens,
 		MetricsRecorder: metricsRecorder,
 	}
 
@@ -750,6 +763,7 @@ func (r *Router) proxy(
 		// to close the TOCTOU window between scoring and dispatching.
 		if !(ctx.PreIncremented && i == ctx.PreIncrementedIdx) {
 			r.store.IncrPodOnFlightRequests(podName)
+			r.store.AddPodOnFlightInputTokens(podName, int64(ctx.InputTokens))
 		}
 
 		// Increment upstream request count with both modelServer and modelRoute
@@ -763,6 +777,7 @@ func (r *Router) proxy(
 
 		// Request is complete (success or failure) — decrement on-flight counter.
 		r.store.DecrPodOnFlightRequests(podName)
+		r.store.SubPodOnFlightInputTokens(podName, int64(ctx.InputTokens))
 
 		if err != nil {
 			klog.Errorf(" pod request error: %v", err)
@@ -1093,19 +1108,28 @@ func (r *Router) proxyToPDDisaggregated(
 		// For the pre-incremented pair the scheduler already bumped both counters,
 		// so the Incr hooks become no-ops to avoid double-counting.
 		preIncr := ctx.PreIncremented && i == ctx.PreIncrementedIdx
+		inputTokens := int64(ctx.InputTokens)
 		hooks := &connectors.OnFlightHooks{
 			IncrPrefill: func() {
 				if !preIncr {
 					r.store.IncrPodOnFlightRequests(prefillPodName)
+					r.store.AddPodOnFlightInputTokens(prefillPodName, inputTokens)
 				}
 			},
-			DecrPrefill: func() { r.store.DecrPodOnFlightRequests(prefillPodName) },
+			DecrPrefill: func() {
+				r.store.DecrPodOnFlightRequests(prefillPodName)
+				r.store.SubPodOnFlightInputTokens(prefillPodName, inputTokens)
+			},
 			IncrDecode: func() {
 				if !preIncr {
 					r.store.IncrPodOnFlightRequests(decodePodName)
+					r.store.AddPodOnFlightInputTokens(decodePodName, inputTokens)
 				}
 			},
-			DecrDecode: func() { r.store.DecrPodOnFlightRequests(decodePodName) },
+			DecrDecode: func() {
+				r.store.DecrPodOnFlightRequests(decodePodName)
+				r.store.SubPodOnFlightInputTokens(decodePodName, inputTokens)
+			},
 		}
 
 		// Execute the PD disaggregated proxy operation

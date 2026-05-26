@@ -50,6 +50,10 @@ type Context struct {
 	// that was pre-incremented. Only meaningful when PreIncremented is true.
 	PreIncrementedIdx int
 
+	// InputTokens is the number of input tokens for this request, used by
+	// the least-token plugin to track per-pod in-flight token load.
+	InputTokens int
+
 	// MetricsRecorder for recording scheduler plugin metrics
 	MetricsRecorder *metrics.RequestMetricsRecorder
 }
