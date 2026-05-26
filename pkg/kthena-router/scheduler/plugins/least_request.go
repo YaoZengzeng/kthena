@@ -17,8 +17,6 @@ limitations under the License.
 package plugins
 
 import (
-	"math"
-
 	"istio.io/istio/pkg/slices"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -85,28 +83,25 @@ func (l *LeastRequest) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 		return scoreResults
 	}
 
-	// Score formula: base = onFlight + 100 * max(onFlight - running, 0)
+	// Score formula: base = onFlight + 4 * waiting
 	//
 	//   - onFlight: router-tracked in-flight count, updated with zero delay.
 	//     Acts as a proxy for current pod load and avoids the ~1 s engine-metrics
 	//     poll lag.
-	//   - max(onFlight - running, 0): estimates the number of requests that the
-	//     router has dispatched but the engine has not yet started executing
-	//     (i.e. likely queued inside the engine). Weighted ×100 to strongly
-	//     penalise pods whose queue is building up.
+	//   - waiting: engine-reported waiting-queue depth from metrics. Weighted ×4
+	//     to strongly penalise pods whose queue is building up.
 	baseScores := make(map[*datastore.PodInfo]float64)
 	maxScore := 0.0
 	for _, info := range pods {
 		onFlight := float64(info.GetOnFlightRequestNum())
-		running := float64(info.GetRequestRunningNum())
-		estimatedWaiting := math.Max(onFlight-running, 0)
-		base := onFlight + 4*estimatedWaiting
+		waiting := info.GetRequestWaitingNum()
+		base := onFlight + 4*waiting
 		baseScores[info] = base
 		if base > maxScore {
 			maxScore = base
 		}
-		klog.V(4).Infof("[least-request] Score pod %s/%s: onFlight=%.0f, running=%.0f, estimatedWaiting=%.0f, base=%.1f",
-			info.Pod.Namespace, info.Pod.Name, onFlight, running, estimatedWaiting, base)
+		klog.V(4).Infof("[least-request] Score pod %s/%s: onFlight=%.0f, waiting=%.0f, base=%.1f",
+			info.Pod.Namespace, info.Pod.Name, onFlight, waiting, base)
 	}
 
 	// Normalise to [0, 100]: the least-loaded pod gets 100.
