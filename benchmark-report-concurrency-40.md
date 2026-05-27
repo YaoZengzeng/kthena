@@ -17,12 +17,13 @@
 
 **Configurations Tested:**
 
-| System | Configuration                  | Description                                                     |
-| ------ | ------------------------------ | --------------------------------------------------------------- |
-| Kthena | 2\*LR + Prefix Cache           | Doubled Least Request weight + Prefix Cache aware routing       |
-| Kthena | 3\*PC + 2\*LR + 2\*GPU         | Multi-dimensional routing (Prefix Cache×3 + LR×2 + GPU Usage×2) |
-| Kthena | 3\*PC + 2\*LR + 2\*GPU + 2\*LT | Multi-dimensional routing (+ Least Token×2)                     |
-| llm-d  | Default                        | llm-d default routing strategy                                  |
+| System | Configuration                  | Description                                                      |
+| ------ | ------------------------------ | ---------------------------------------------------------------- |
+| Kthena | 2\*LR + Prefix Cache           | Doubled Least Request weight + Prefix Cache aware routing        |
+| Kthena | 3\*PC + 2\*LR + 2\*GPU         | Multi-dimensional routing (Prefix Cache×3 + LR×2 + GPU Usage×2)  |
+| Kthena | 3\*PC + 2\*LR + 2\*GPU + 2\*LT | Multi-dimensional routing (+ Least Token×2)                      |
+| Kthena | 3\*KV + 2\*LR + 2\*GPU         | Multi-dimensional routing (KVCache Aware×3 + LR×2 + GPU Usage×2) |
+| llm-d  | Default                        | llm-d default routing strategy                                   |
 
 ---
 
@@ -35,6 +36,7 @@ All values are **averages across 3 runs**. Lower is better for latency metrics; 
 | **Kthena 2\*LR + PC**                     | 4,517.07  | 14,951.23            | 70.03    | 387.37                    | 2.58                       | 17.61                            | 8,476.79             |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU**         | 3,970.48  | 13,303.99            | 62.65    | 417.04                    | 2.78                       | 20.21                            | 9,211.07             |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT** | 4,078.79  | 14,547.27            | 70.27    | 393.03                    | 2.62                       | 17.23                            | 8,072.47             |
+| **Kthena 3\*KV + 2\*LR + 2\*GPU**         | 3,824.83  | 13,454.16            | 64.63    | 408.22                    | 2.72                       | 19.89                            | 8,845.42             |
 | **llm-d Default**                         | 3,715.96  | 13,767.99            | 67.49    | 405.87                    | 2.71                       | 18.23                            | 7,963.06             |
 
 ---
@@ -46,9 +48,9 @@ All values are **averages across 3 runs**. Lower is better for latency metrics; 
 ```mermaid
 xychart-beta
     title "Output Token Throughput (tokens/sec) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "Throughput (tokens/sec)" 370 --> 430
-    bar [387.37, 417.04, 393.03, 405.87]
+    bar [387.37, 417.04, 393.03, 408.22, 405.87]
 ```
 
 ### 3.2 TTFT (ms) — Lower is Better
@@ -56,9 +58,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "TTFT (ms) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "TTFT (ms)" 3500 --> 4700
-    bar [4517.07, 3970.48, 4078.79, 3715.96]
+    bar [4517.07, 3970.48, 4078.79, 3824.83, 3715.96]
 ```
 
 ### 3.3 Request Latency (ms) — Lower is Better
@@ -66,9 +68,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Request Latency (ms) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "Latency (ms)" 12500 --> 15500
-    bar [14951.23, 13303.99, 14547.27, 13767.99]
+    bar [14951.23, 13303.99, 14547.27, 13454.16, 13767.99]
 ```
 
 ### 3.4 Inter Token Latency / ITL (ms) — Lower is Better
@@ -76,9 +78,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Inter Token Latency (ms) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "ITL (ms)" 58 --> 74
-    bar [70.03, 62.65, 70.27, 67.49]
+    bar [70.03, 62.65, 70.27, 64.63, 67.49]
 ```
 
 ### 3.5 Per-User Throughput (tok/s/user) — Higher is Better
@@ -86,9 +88,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Per-User Throughput (tok/s/user) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "Per-User (tok/s/user)" 15 --> 22
-    bar [17.61, 20.21, 17.23, 18.23]
+    bar [17.61, 20.21, 17.23, 19.89, 18.23]
 ```
 
 ### 3.6 Request Throughput (req/s) — Higher is Better
@@ -96,9 +98,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Request Throughput (req/s) — Concurrency 40"
-    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "llm-d Default"]
+    x-axis ["Kthena 2*LR+PC", "Kthena 3*PC+2*LR+2*GPU", "Kthena 3*PC+2*LR+2*GPU+2*LT", "Kthena 3*KV+2*LR+2*GPU", "llm-d Default"]
     y-axis "Requests/sec" 2.4 --> 2.9
-    bar [2.58, 2.78, 2.62, 2.71]
+    bar [2.58, 2.78, 2.62, 2.72, 2.71]
 ```
 
 ---
@@ -109,15 +111,15 @@ xychart-beta
 
 For latency metrics: negative = lower (better). For throughput metrics: positive = higher (better).
 
-| Metric                  | Kthena 2\*LR+PC | Kthena 3\*PC+2\*LR+2\*GPU | Kthena 3\*PC+2\*LR+2\*GPU+2\*LT |
-| ----------------------- | --------------- | ------------------------- | ------------------------------- |
-| **Output Throughput**   | -4.6% ❌         | **+2.8%** ✅               | -3.2% ❌                         |
-| **Request Throughput**  | -4.8% ❌         | **+2.6%** ✅               | -3.3% ❌                         |
-| **Request Latency**     | +8.6% ❌         | **-3.4%** ✅               | +5.7% ❌                         |
-| **ITL**                 | +3.8% ❌         | **-7.2%** ✅               | +4.1% ❌                         |
-| **Per-User Throughput** | -3.4% ❌         | **+10.9%** ✅              | -5.5% ❌                         |
-| **TTFT**                | +21.6% ❌        | +6.9% ❌                   | +9.8% ❌                         |
-| **Latency Std Dev**     | +6.5% ❌         | +15.7% ❌                  | +1.4% ≈                         |
+| Metric                  | Kthena 2\*LR+PC | Kthena 3\*PC+2\*LR+2\*GPU | Kthena 3\*PC+2\*LR+2\*GPU+2\*LT | Kthena 3\*KV+2\*LR+2\*GPU |
+| ----------------------- | --------------- | ------------------------- | ------------------------------- | ------------------------- |
+| **Output Throughput**   | -4.6% ❌         | **+2.8%** ✅               | -3.2% ❌                         | +0.6% ≈                   |
+| **Request Throughput**  | -4.8% ❌         | **+2.6%** ✅               | -3.3% ❌                         | +0.4% ≈                   |
+| **Request Latency**     | +8.6% ❌         | **-3.4%** ✅               | +5.7% ❌                         | **-2.3%** ✅               |
+| **ITL**                 | +3.8% ❌         | **-7.2%** ✅               | +4.1% ❌                         | **-4.2%** ✅               |
+| **Per-User Throughput** | -3.4% ❌         | **+10.9%** ✅              | -5.5% ❌                         | **+9.1%** ✅               |
+| **TTFT**                | +21.6% ❌        | +6.9% ❌                   | +9.8% ❌                         | +2.9% ❌                   |
+| **Latency Std Dev**     | +6.5% ❌         | +15.7% ❌                  | +1.4% ≈                         | +11.1% ❌                  |
 
 ### 4.2 Best Configuration Summary (3\*PC + 2\*LR + 2\*GPU)
 
@@ -140,6 +142,7 @@ P50 reflects the **typical user experience** and is more representative of what 
 | **Kthena 2\*LR + PC**                     | 932.08        | 12,197.51                | 70.46        |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU**         | 432.71        | 9,474.18                 | 59.15        |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT** | 618.62        | 11,113.92                | 66.81        |
+| **Kthena 3\*KV + 2\*LR + 2\*GPU**         | 517.22        | 9,680.82                 | 60.90        |
 | **llm-d Default**                         | 545.87        | 10,593.20                | 65.38        |
 
 ### P50 Improvement (Kthena 3\*PC+2\*LR+2\*GPU vs llm-d Default)
@@ -165,11 +168,11 @@ xychart-beta
 
 ## 6. Tail Latency Comparison (P99)
 
-| Metric                   | Kthena 2\*LR+PC | Kthena 3\*PC+2\*LR+2\*GPU | Kthena 3\*PC+2\*LR+2\*GPU+2\*LT | llm-d Default |
-| ------------------------ | --------------- | ------------------------- | ------------------------------- | ------------- |
-| TTFT p99 (ms)            | 17,189          | 25,912                    | 17,088                          | 18,018        |
-| Request Latency p99 (ms) | 31,541          | 39,500                    | 31,620                          | 32,242        |
-| ITL p99 (ms)             | 102.56          | 102.74                    | 103.83                          | 103.46        |
+| Metric                   | Kthena 2\*LR+PC | Kthena 3\*PC+2\*LR+2\*GPU | Kthena 3\*PC+2\*LR+2\*GPU+2\*LT | Kthena 3\*KV+2\*LR+2\*GPU | llm-d Default |
+| ------------------------ | --------------- | ------------------------- | ------------------------------- | ------------------------- | ------------- |
+| TTFT p99 (ms)            | 17,189          | 25,912                    | 17,088                          | 21,768                    | 18,018        |
+| Request Latency p99 (ms) | 31,541          | 39,500                    | 31,620                          | 35,726                    | 32,242        |
+| ITL p99 (ms)             | 102.56          | 102.74                    | 103.83                          | 103.21                    | 103.46        |
 
 ### P99 Comparison Analysis
 
@@ -190,6 +193,7 @@ xychart-beta
 | **Kthena 2\*LR + PC**                     | 13,381        | 27,497                   | 99.35        |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU**         | 13,793        | 27,794                   | 98.19        |
 | **Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT** | 12,457        | 26,741                   | 99.80        |
+| **Kthena 3\*KV + 2\*LR + 2\*GPU**         | 13,175        | 27,474                   | 99.38        |
 | **llm-d Default**                         | 12,099        | 26,085                   | 98.71        |
 
 ---
@@ -232,7 +236,19 @@ xychart-beta
 | Per-User Throughput  | 16.80     | 17.21     | 17.69     | 17.23     |
 | Latency Std Dev      | 7,238.58  | 8,240.87  | 8,737.97  | 8,072.47  |
 
-### 8.4 llm-d Default (3 runs)
+### 8.4 Kthena 3\*KV + 2\*LR + 2\*GPU (3 runs)
+
+| Metric               | Run 1     | Run 2     | Run 3     | Average   |
+| -------------------- | --------- | --------- | --------- | --------- |
+| TTFT (ms)            | 3,886.11  | 3,756.45  | 3,831.94  | 3,824.83  |
+| Request Latency (ms) | 13,448.63 | 13,484.76 | 13,429.08 | 13,454.16 |
+| ITL (ms)             | 64.18     | 65.29     | 64.42     | 64.63     |
+| Output Throughput    | 407.80    | 405.69    | 411.17    | 408.22    |
+| Request Throughput   | 2.72      | 2.70      | 2.74      | 2.72      |
+| Per-User Throughput  | 20.56     | 19.28     | 19.84     | 19.89     |
+| Latency Std Dev      | 8,969.17  | 8,627.99  | 8,939.09  | 8,845.42  |
+
+### 8.5 llm-d Default (3 runs)
 
 | Metric               | Run 1     | Run 2     | Run 3     | Average   |
 | -------------------- | --------- | --------- | --------- | --------- |
@@ -250,33 +266,51 @@ xychart-beta
 
 ### 9.1 Kthena 3\*PC + 2\*LR + 2\*GPU is the Optimal Configuration at Concurrency 40
 
-Under high-concurrency stress (40), **only the 3\*PC + 2\*LR + 2\*GPU configuration outperforms llm-d Default** across most metrics (except TTFT):
+Under high-concurrency stress (40), **the 3\*PC + 2\*LR + 2\*GPU configuration outperforms llm-d Default** across most metrics (except TTFT):
 
 - **Output throughput +2.8%**: 417.04 vs 405.87 tok/s
 - **Request latency -3.4%**: 13,304 vs 13,768 ms
 - **ITL -7.2%**: 62.65 vs 67.49 ms — noticeably smoother token streaming
 - **Per-user throughput +10.9%**: 20.21 vs 18.23 tok/s/user — significantly better individual user experience
 
-### 9.2 P50 Median Experience — Kthena Leads Substantially
+### 9.2 KVCache Aware Strategy — Strong Runner-Up with Best TTFT Among Kthena
+
+The **3\*KV + 2\*LR + 2\*GPU** configuration also outperforms llm-d Default in latency and per-user throughput:
+
+- **Request latency -2.3%**: 13,454 vs 13,768 ms
+- **ITL -4.2%**: 64.63 vs 67.49 ms
+- **Per-user throughput +9.1%**: 19.89 vs 18.23 tok/s/user
+- **Best TTFT among all Kthena configs**: 3,825 ms (only +2.9% from llm-d, vs +6.9% for 3\*PC)
+
+Compared to 3\*PC + 2\*LR + 2\*GPU, the KVCache Aware variant has:
+- **Better average TTFT** (3,825 vs 3,970 ms, -3.7%)
+- **Better latency stability** (std 8,845 vs 9,211 ms, -4.0%)
+- **Lower P99 TTFT** (21,768 vs 25,912 ms, -16.0%)
+- Slightly lower throughput (-2.1%) and slightly higher ITL (+3.2%)
+
+This makes it a **well-balanced alternative** when TTFT and tail-latency stability are important alongside throughput.
+
+### 9.3 P50 Median Experience — Kthena Leads Substantially
 
 For the majority of users (p50 represents the experience of 50% of users):
 
-- **TTFT p50 is 20.7% lower**: 432.71 ms vs 545.87 ms — most users perceive noticeably faster first-token delivery
-- **Request latency p50 is 10.6% lower**: 9,474 ms vs 10,593 ms
-- **ITL p50 is 9.5% lower**: 59.15 ms vs 65.38 ms
+- **TTFT p50 is 20.7% lower** (3\*PC): 432.71 ms vs 545.87 ms — most users perceive noticeably faster first-token delivery
+- **Request latency p50 is 10.6% lower** (3\*PC): 9,474 ms vs 10,593 ms
+- **ITL p50 is 9.5% lower** (3\*PC): 59.15 ms vs 65.38 ms
 
-This indicates that Kthena's 3\*PC+2\*LR+2\*GPU strategy processes **typical requests** far more efficiently than llm-d, but a small number of tail-latency requests (possibly due to Prefix Cache routing computation overhead) raise the average.
+The KVCache Aware config also improves p50 vs llm-d: TTFT -5.2%, Request Latency -8.6%, ITL -6.9%.
 
-### 9.3 Average TTFT — llm-d Performs Better
+### 9.4 Average TTFT — llm-d Performs Better
 
-llm-d Default's average TTFT (3,716 ms) is lower than all Kthena configurations (best: 3,970 ms). The gap originates from high-percentile requests:
+llm-d Default's average TTFT (3,716 ms) is lower than all Kthena configurations (best Kthena: 3,825 ms with KVCache Aware). The gap originates from high-percentile requests:
 
 - Kthena 3\*PC+2\*LR+2\*GPU TTFT p99 reaches 25,912 ms, while llm-d is 18,018 ms
-- However, at p50 Kthena surpasses llm-d (432.71 ms vs 545.87 ms)
+- Kthena 3\*KV+2\*LR+2\*GPU TTFT p99 is 21,768 ms — significantly better than 3\*PC
+- However, at p50 both Kthena configs surpass llm-d (432.71 / 517.22 ms vs 545.87 ms)
 
-This suggests Kthena has a small number of requests with excessive wait times under high concurrency, likely related to the computational overhead of multi-dimensional routing decisions or Prefix Cache matching variance.
+This suggests Kthena has a small number of requests with excessive wait times under high concurrency, likely related to the computational overhead of multi-dimensional routing decisions or cache matching variance.
 
-### 9.4 2\*LR + PC Strategy Degrades Under High Concurrency
+### 9.5 2\*LR + PC Strategy Degrades Under High Concurrency
 
 This configuration performs optimally at concurrency 10 (based on historical data) but falls behind llm-d Default across all metrics at concurrency 40:
 - Throughput -4.6%
@@ -285,7 +319,7 @@ This configuration performs optimally at concurrency 10 (based on historical dat
 
 **Root Cause**: The simple dual-weight strategy cannot effectively differentiate load states at 40 concurrency. The binary scoring of Prefix Cache combined with low-discrimination LR scores is insufficient for high-concurrency scenarios.
 
-### 9.5 Least Token Dimension Provides No Expected Benefit
+### 9.6 Least Token Dimension Provides No Expected Benefit
 
 3\*PC + 2\*LR + 2\*GPU + 2\*LT compared to 3\*PC + 2\*LR + 2\*GPU:
 - Throughput -5.8% (393 vs 417 tok/s)
@@ -298,14 +332,15 @@ Adding the Least Token dimension actually **degrades overall performance**, like
 
 ## 10. Configuration Recommendations
 
-| Optimization Goal                 | Recommended Configuration      | vs llm-d Default                  |
-| --------------------------------- | ------------------------------ | --------------------------------- |
-| **Maximum Throughput**            | 3\*PC + 2\*LR + 2\*GPU         | +2.8% output throughput           |
-| **Lowest ITL (Streaming)**        | 3\*PC + 2\*LR + 2\*GPU         | -7.2% ITL                         |
-| **Best User Experience (p50)**    | 3\*PC + 2\*LR + 2\*GPU         | TTFT -20.7%, Latency -10.6%       |
-| **Best Per-User Throughput**      | 3\*PC + 2\*LR + 2\*GPU         | +10.9% per-user throughput        |
-| **Most Stable Latency (Low Std)** | 3\*PC + 2\*LR + 2\*GPU + 2\*LT | std 8,072 (lowest)                |
-| **Lowest Tail Latency (p99)**     | 2\*LR + PC                     | TTFT p99 -4.6%, Latency p99 -2.2% |
+| Optimization Goal                 | Recommended Configuration      | vs llm-d Default                     |
+| --------------------------------- | ------------------------------ | ------------------------------------ |
+| **Maximum Throughput**            | 3\*PC + 2\*LR + 2\*GPU         | +2.8% output throughput              |
+| **Lowest ITL (Streaming)**        | 3\*PC + 2\*LR + 2\*GPU         | -7.2% ITL                            |
+| **Best User Experience (p50)**    | 3\*PC + 2\*LR + 2\*GPU         | TTFT -20.7%, Latency -10.6%          |
+| **Best Per-User Throughput**      | 3\*PC + 2\*LR + 2\*GPU         | +10.9% per-user throughput           |
+| **Most Balanced (TTFT+Latency)**  | 3\*KV + 2\*LR + 2\*GPU         | TTFT +2.9%, Latency -2.3%, ITL -4.2% |
+| **Most Stable Latency (Low Std)** | 3\*PC + 2\*LR + 2\*GPU + 2\*LT | std 8,072 (lowest)                   |
+| **Lowest Tail Latency (p99)**     | 2\*LR + PC                     | TTFT p99 -4.6%, Latency p99 -2.2%    |
 
 ---
 
@@ -325,12 +360,25 @@ Under high-concurrency (40) multi-turn conversation workload:
 | P50 Request Latency | **-10.6%** |
 | P50 ITL             | **-9.5%**  |
 
+**Kthena 3\*KV + 2\*LR + 2\*GPU is a strong balanced alternative**, also outperforming llm-d Default:
+
+| Dimension           | Advantage |
+| ------------------- | --------- |
+| Request Latency     | **-2.3%** |
+| ITL                 | **-4.2%** |
+| Per-User Throughput | **+9.1%** |
+| P50 TTFT            | **-5.2%** |
+| P50 Request Latency | **-8.6%** |
+| P50 ITL             | **-6.9%** |
+
+With additional advantages over 3\*PC+2\*LR+2\*GPU: better average TTFT (-3.7%), lower latency std dev (-4.0%), and significantly lower P99 TTFT (-16.0%).
+
 **Areas where llm-d Default performs better:**
 
-| Dimension       | Gap               |
-| --------------- | ----------------- |
-| Average TTFT    | llm-d 6.9% lower  |
-| P99 TTFT        | llm-d 30.5% lower |
-| Latency Std Dev | llm-d 13.5% lower |
+| Dimension       | Gap                                                  |
+| --------------- | ---------------------------------------------------- |
+| Average TTFT    | llm-d 2.9% lower (vs best Kthena: 3\*KV)             |
+| P99 TTFT        | llm-d 17.2% lower (vs 3\*KV), 30.5% lower (vs 3\*PC) |
+| Latency Std Dev | llm-d 10.0% lower (vs 3\*KV), 13.5% lower (vs 3\*PC) |
 
-**Core Conclusion:** Under high-concurrency conditions, Kthena's multi-dimensional routing strategy still outperforms llm-d in **throughput, average latency, and user-perceived streaming speed (ITL/per-user throughput)**, with particularly significant improvements for the **majority of users (p50)**. However, **tail latency stability** requires further optimization to address the issue of a small number of requests experiencing excessive latency under extreme load.
+**Core Conclusion:** Under high-concurrency conditions, Kthena's multi-dimensional routing strategies (both Prefix Cache and KVCache Aware variants) outperform llm-d in **throughput, average latency, and user-perceived streaming speed (ITL/per-user throughput)**, with particularly significant improvements for the **majority of users (p50)**. The KVCache Aware variant offers the **best balance** between performance and TTFT/stability, while the Prefix Cache variant delivers **maximum throughput**. However, **tail latency stability** requires further optimization to address the issue of a small number of requests experiencing excessive latency under extreme load.
