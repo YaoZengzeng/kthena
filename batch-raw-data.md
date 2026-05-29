@@ -1,4 +1,4 @@
-1. gsp-num-groups: 64, gsp-system-prompt-len: 6400, gsp-question-len: 256, gsp-output-len: 256, max-concurrency: 8
+1. gsp-num-groups: 64, gsp-system-prompt-len: 6400, gsp-question-len: 256, gsp-output-len: 256, max-concurrency: 16
 
 1.1 sequential:
 
@@ -63,7 +63,7 @@ Max ITL (ms):                            233.17
 ==================================================
 
 
-1. gsp-num-groups: 64, gsp-system-prompt-len: 6400, gsp-question-len: 256, gsp-output-len: 256, max-concurrency: 16
+2. gsp-num-groups: 64, gsp-system-prompt-len: 6400, gsp-question-len: 256, gsp-output-len: 256, max-concurrency: 4
 
 2.1 sequential:
 
