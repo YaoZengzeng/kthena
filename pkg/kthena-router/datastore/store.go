@@ -238,6 +238,10 @@ type Store interface {
 	// Enqueue adds a request to the fair queue
 	Enqueue(*Request) error
 
+	// MarkSessionCompleted records that a request with the given correlation ID
+	// has completed, enabling priority boosting for follow-up requests in the same session.
+	MarkSessionCompleted(modelName, correlationID string)
+
 	// GetRequestWaitingQueueStats returns per-model queue lengths
 	GetRequestWaitingQueueStats() []QueueStat
 
@@ -459,6 +463,23 @@ func createFairnessQueueConfig() FairnessQueueConfig {
 		}
 	}
 
+	// Session boost configuration for multi-turn conversation prefix cache optimization
+	if v := os.Getenv("FAIRNESS_SESSION_BOOST_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.SessionBoostEnabled = b
+		} else {
+			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_ENABLED: %q, using default %v", v, cfg.SessionBoostEnabled)
+		}
+	}
+
+	if v := os.Getenv("FAIRNESS_SESSION_BOOST_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.SessionBoostTTL = d
+		} else {
+			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_TTL: %q, using default %v", v, cfg.SessionBoostTTL)
+		}
+	}
+
 	return cfg
 }
 
@@ -566,7 +587,10 @@ func (s *store) Enqueue(req *Request) error {
 	if ok {
 		queue, _ = val.(*RequestPriorityQueue)
 	} else {
-		newQueue := NewRequestPriorityQueueWithConfig(nil, s.fairnessQueueConfig, s.tokenTracker)
+		// Create a backend waiting checker that polls all pods for waiting queue status.
+		// Only dequeue when at least one pod has an empty vLLM waiting queue.
+		checker := s.makeBackendWaitingChecker()
+		newQueue := NewRequestPriorityQueueWithConfig(nil, s.fairnessQueueConfig, s.tokenTracker, checker)
 		val, ok = s.requestWaitingQueue.LoadOrStore(modelName, newQueue)
 		if !ok {
 			queueCtx := s.rootCtx
@@ -584,6 +608,48 @@ func (s *store) Enqueue(req *Request) error {
 		return err
 	}
 	return nil
+}
+
+// makeBackendWaitingChecker returns a BackendWaitingChecker function that checks
+// whether any backend pod has an empty vLLM waiting queue (RequestWaitingNum == 0).
+// Returns true when at least one pod has capacity, allowing the fairness queue
+// to dequeue a request.
+func (s *store) makeBackendWaitingChecker() BackendWaitingChecker {
+	return func() bool {
+		hasCapacity := false
+		podCount := 0
+		s.pods.Range(func(key, value any) bool {
+			podInfo, ok := value.(*PodInfo)
+			if !ok || podInfo == nil {
+				return true
+			}
+			podCount++
+			if podInfo.RequestWaitingNum == 0 {
+				hasCapacity = true
+				return false // stop iterating, found a pod with capacity
+			}
+			return true
+		})
+		// If no pods are registered yet, allow dequeue to avoid deadlock
+		if podCount == 0 {
+			return true
+		}
+		return hasCapacity
+	}
+}
+
+func (s *store) MarkSessionCompleted(modelName, correlationID string) {
+	if correlationID == "" {
+		return
+	}
+	val, ok := s.requestWaitingQueue.Load(modelName)
+	if !ok {
+		return
+	}
+	queue, _ := val.(*RequestPriorityQueue)
+	if queue != nil {
+		queue.MarkSessionCompleted(correlationID)
+	}
 }
 
 func (s *store) GetRequestWaitingQueueStats() []QueueStat {

@@ -1131,35 +1131,57 @@ func (r *Router) proxyToPDDisaggregated(
 	return fmt.Errorf("all prefill/decode attempts failed")
 }
 
-// handleFairnessScheduling handles the fairness scheduling flow for requests
+// handleFairnessScheduling handles the fairness scheduling flow for requests.
+// It supports session-aware priority boosting for multi-turn conversations:
+// requests identified by X-Correlation-ID that follow a recently completed request
+// in the same session are boosted to the front of the queue to leverage prefix cache.
 func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequest, requestID string, modelName string) error {
-	userIdVal, ok := c.Get(common.UserIdKey)
-	if !ok {
-		c.AbortWithStatusJSON(http.StatusBadRequest, "missing userId in request body")
-		return fmt.Errorf("missing userId in request body")
+	// Extract session correlation ID from HTTP header for multi-turn conversation tracking.
+	// X-Correlation-ID identifies a conversation session; X-Request-ID identifies individual requests.
+	correlationID := c.Request.Header.Get("X-Correlation-ID")
+	// Use the request ID from header if available, otherwise fall back to the generated one
+	if headerReqID := c.Request.Header.Get("X-Request-ID"); headerReqID != "" {
+		requestID = headerReqID
 	}
-	userId, ok := userIdVal.(string)
-	if !ok {
-		c.AbortWithStatusJSON(http.StatusBadRequest, "userId is not a string")
-		return fmt.Errorf("userId is not a string")
+
+	// userId is optional when session boost is available (correlationID present).
+	// When missing, priority defaults to 0 and session boost handles ordering.
+	var userId string
+	if userIdVal, ok := c.Get(common.UserIdKey); ok {
+		if s, ok := userIdVal.(string); ok {
+			userId = s
+		}
 	}
+	if userId == "" && correlationID == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, "missing userId in request body and no X-Correlation-ID header")
+		return fmt.Errorf("missing userId in request body and no X-Correlation-ID header")
+	}
+
+	klog.Infof("[FairnessScheduling] incoming request: reqID=%s user=%s model=%s",
+		requestID, userId, modelName)
 
 	// Create request-scoped context that unifies client disconnect and server timeout
 	reqCtx, cancel := context.WithTimeout(c.Request.Context(), r.fairnessTimeout)
 	defer cancel()
 
-	pri := r.calculateRequestPriority(userId, modelName)
+	var pri float64
+	if userId != "" {
+		pri = r.calculateRequestPriority(userId, modelName)
+	}
 	queueReq := &datastore.Request{
-		ReqID:       requestID,
-		UserID:      userId,
-		ModelName:   modelName,
-		Priority:    pri,
-		RequestTime: time.Now(),
-		NotifyChan:  make(chan struct{}),
-		CancelCh:    reqCtx.Done(),
+		ReqID:         requestID,
+		UserID:        userId,
+		ModelName:     modelName,
+		CorrelationID: correlationID,
+		Priority:      pri,
+		RequestTime:   time.Now(),
+		NotifyChan:    make(chan struct{}),
+		CancelCh:      reqCtx.Done(),
 	}
 
 	if err := r.store.Enqueue(queueReq); err != nil {
+		klog.Errorf("[FairnessScheduling] failed to enqueue: reqID=%s correlationID=%s user=%s model=%s err=%v",
+			requestID, correlationID, userId, modelName, err)
 		c.AbortWithStatusJSON(http.StatusInternalServerError, fmt.Sprintf("failed to enqueue request: %v", err))
 		return fmt.Errorf("failed to enqueue request: %v", err)
 	}
@@ -1169,18 +1191,28 @@ func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequ
 		if queueReq.Release != nil {
 			defer queueReq.Release()
 		}
+		klog.Infof("[FairnessScheduling] request dequeued: reqID=%s user=%s model=%s sessionBoost=%v waitTime=%v",
+			requestID, userId, modelName, queueReq.SessionBoost, time.Since(queueReq.RequestTime))
 		r.doLoadbalance(c, modelRequest)
+
+		// After successful proxy, mark the session as completed so follow-up
+		// requests from the same session get priority boost for prefix cache.
+		if correlationID != "" {
+			r.store.MarkSessionCompleted(modelName, correlationID)
+		}
 		return nil
 	case <-reqCtx.Done():
 		if queueReq.Release != nil {
 			queueReq.Release()
 		}
 		if errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
-			klog.Errorf("request %s timed out in fairness queue after %v", requestID, r.fairnessTimeout)
+			klog.Errorf("[FairnessScheduling] request timed out in queue: reqID=%s correlationID=%s user=%s model=%s timeout=%v",
+				requestID, correlationID, userId, modelName, r.fairnessTimeout)
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, "Request processing timed out")
 			return fmt.Errorf("request processing timed out in fairness queue")
 		}
-		klog.Infof("request %s cancelled: client disconnected", requestID)
+		klog.Infof("[FairnessScheduling] request cancelled (client disconnected): reqID=%s correlationID=%s user=%s model=%s",
+			requestID, correlationID, userId, modelName)
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, "Client disconnected while waiting in fairness queue")
 		return fmt.Errorf("client disconnected while waiting in fairness queue")
 	}

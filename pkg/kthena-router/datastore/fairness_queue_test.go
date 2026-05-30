@@ -864,3 +864,442 @@ func TestRun_SemaphoreMode_EmptyQueueDoesNotConsumePermit(t *testing.T) {
 	}
 	req.Release()
 }
+
+// --- Session-aware priority boosting tests ---
+
+func TestSessionTracker_MarkCompleted(t *testing.T) {
+	st := NewSessionTracker(5 * time.Second)
+
+	// Empty tracker
+	if st.HasRecentCompletion("session-1") {
+		t.Error("Empty tracker should not have recent completion")
+	}
+
+	// Mark and check
+	st.MarkCompleted("session-1")
+	if !st.HasRecentCompletion("session-1") {
+		t.Error("Should have recent completion after MarkCompleted")
+	}
+
+	// Empty string
+	st.MarkCompleted("")
+	if st.HasRecentCompletion("") {
+		t.Error("Empty correlation ID should not have recent completion")
+	}
+
+	if st.ActiveSessions() != 1 {
+		t.Errorf("Expected 1 active session, got %d", st.ActiveSessions())
+	}
+}
+
+func TestSessionTracker_TTLExpiry(t *testing.T) {
+	st := NewSessionTracker(50 * time.Millisecond)
+
+	st.MarkCompleted("session-1")
+	if !st.HasRecentCompletion("session-1") {
+		t.Error("Should have recent completion immediately")
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(60 * time.Millisecond)
+	if st.HasRecentCompletion("session-1") {
+		t.Error("Should not have recent completion after TTL expired")
+	}
+}
+
+func TestSessionTracker_Cleanup(t *testing.T) {
+	st := NewSessionTracker(50 * time.Millisecond)
+
+	st.MarkCompleted("session-1")
+	st.MarkCompleted("session-2")
+	st.MarkCompleted("session-3")
+	if st.ActiveSessions() != 3 {
+		t.Errorf("Expected 3 active sessions, got %d", st.ActiveSessions())
+	}
+
+	// Wait for TTL and cleanup
+	time.Sleep(60 * time.Millisecond)
+	st.Cleanup()
+	if st.ActiveSessions() != 0 {
+		t.Errorf("Expected 0 active sessions after cleanup, got %d", st.ActiveSessions())
+	}
+}
+
+func TestSessionBoost_PriorityOrdering(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       0,
+		MaxQPS:              100,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     5 * time.Second,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	if pq.sessionTracker == nil {
+		t.Fatal("Session tracker should be initialized when SessionBoostEnabled is true")
+	}
+
+	// Simulate a completed session
+	pq.MarkSessionCompleted("conv-123")
+
+	now := time.Now()
+
+	// Push a normal request (high priority value, lower urgency)
+	normalReq := &Request{
+		ReqID:         "req-normal",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "conv-999",
+		Priority:      1.0,
+		RequestTime:   now,
+	}
+
+	// Push a follow-up request from the completed session (higher priority value but should be boosted)
+	boostReq := &Request{
+		ReqID:         "req-boosted",
+		UserID:        "user-B",
+		ModelName:     "model-1",
+		CorrelationID: "conv-123",
+		Priority:      100.0, // Much higher priority value (lower urgency), but should still go first due to boost
+		RequestTime:   now.Add(time.Second),
+	}
+
+	// Push normal first, then boosted
+	if err := pq.PushRequest(normalReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+	if err := pq.PushRequest(boostReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// The boosted request should come out first despite higher priority value
+	first, err := pq.popWhenAvailable(context.Background())
+	if err != nil {
+		t.Fatalf("Pop failed: %v", err)
+	}
+	if first.ReqID != "req-boosted" {
+		t.Errorf("Expected boosted request first, got %s", first.ReqID)
+	}
+	if !first.SessionBoost {
+		t.Error("Boosted request should have SessionBoost=true")
+	}
+
+	second, err := pq.popWhenAvailable(context.Background())
+	if err != nil {
+		t.Fatalf("Pop failed: %v", err)
+	}
+	if second.ReqID != "req-normal" {
+		t.Errorf("Expected normal request second, got %s", second.ReqID)
+	}
+	if second.SessionBoost {
+		t.Error("Normal request should have SessionBoost=false")
+	}
+}
+
+func TestSessionBoost_NoBoostWithoutConfig(t *testing.T) {
+	// Default config: session boost disabled
+	pq := NewRequestPriorityQueue(nil)
+	defer pq.Close()
+
+	if pq.sessionTracker != nil {
+		t.Error("Session tracker should be nil when SessionBoostEnabled is false")
+	}
+
+	// MarkSessionCompleted should be a no-op
+	pq.MarkSessionCompleted("conv-123")
+
+	now := time.Now()
+	req := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "conv-123",
+		Priority:      1.0,
+		RequestTime:   now,
+	}
+
+	if err := pq.PushRequest(req); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	popped, err := pq.popWhenAvailable(context.Background())
+	if err != nil {
+		t.Fatalf("Pop failed: %v", err)
+	}
+	if popped.SessionBoost {
+		t.Error("Request should not have SessionBoost when feature is disabled")
+	}
+}
+
+func TestSessionBoost_BoostExpires(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       0,
+		MaxQPS:              100,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     50 * time.Millisecond,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	// Mark session completed
+	pq.MarkSessionCompleted("conv-123")
+
+	// Wait for TTL to expire
+	time.Sleep(60 * time.Millisecond)
+
+	now := time.Now()
+	req := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "conv-123",
+		Priority:      1.0,
+		RequestTime:   now,
+	}
+
+	if err := pq.PushRequest(req); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	popped, err := pq.popWhenAvailable(context.Background())
+	if err != nil {
+		t.Fatalf("Pop failed: %v", err)
+	}
+	if popped.SessionBoost {
+		t.Error("Request should not have SessionBoost after TTL expired")
+	}
+}
+
+func TestSessionBoost_MultipleSessions(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       0,
+		MaxQPS:              100,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     5 * time.Second,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	// Mark multiple sessions as completed
+	pq.MarkSessionCompleted("conv-A")
+	pq.MarkSessionCompleted("conv-B")
+
+	now := time.Now()
+	requests := []*Request{
+		{ReqID: "normal-1", UserID: "user-1", ModelName: "m", CorrelationID: "conv-X", Priority: 1.0, RequestTime: now},
+		{ReqID: "boost-A", UserID: "user-2", ModelName: "m", CorrelationID: "conv-A", Priority: 5.0, RequestTime: now.Add(time.Millisecond)},
+		{ReqID: "boost-B", UserID: "user-3", ModelName: "m", CorrelationID: "conv-B", Priority: 3.0, RequestTime: now.Add(2 * time.Millisecond)},
+		{ReqID: "normal-2", UserID: "user-4", ModelName: "m", CorrelationID: "", Priority: 0.5, RequestTime: now.Add(3 * time.Millisecond)},
+	}
+
+	for _, r := range requests {
+		if err := pq.PushRequest(r); err != nil {
+			t.Fatalf("PushRequest failed: %v", err)
+		}
+	}
+
+	// Boosted requests should come first (ordered by priority among themselves)
+	first, _ := pq.popWhenAvailable(context.Background())
+	second, _ := pq.popWhenAvailable(context.Background())
+	third, _ := pq.popWhenAvailable(context.Background())
+	fourth, _ := pq.popWhenAvailable(context.Background())
+
+	// Both boosted should come before normal requests
+	if !first.SessionBoost || !second.SessionBoost {
+		t.Errorf("First two should be boosted: first=%v second=%v", first.SessionBoost, second.SessionBoost)
+	}
+	if third.SessionBoost || fourth.SessionBoost {
+		t.Errorf("Last two should not be boosted: third=%v fourth=%v", third.SessionBoost, fourth.SessionBoost)
+	}
+
+	// Among boosted: lower priority value comes first
+	if first.ReqID != "boost-B" {
+		t.Errorf("Expected boost-B first (priority 3.0), got %s (priority %.1f)", first.ReqID, first.Priority)
+	}
+	if second.ReqID != "boost-A" {
+		t.Errorf("Expected boost-A second (priority 5.0), got %s (priority %.1f)", second.ReqID, second.Priority)
+	}
+
+	// Among normal: lower priority value comes first
+	if third.ReqID != "normal-2" {
+		t.Errorf("Expected normal-2 third (priority 0.5), got %s (priority %.1f)", third.ReqID, third.Priority)
+	}
+	if fourth.ReqID != "normal-1" {
+		t.Errorf("Expected normal-1 fourth (priority 1.0), got %s (priority %.1f)", fourth.ReqID, fourth.Priority)
+	}
+}
+
+func TestSessionBoost_SemaphoreMode(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       2,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     5 * time.Second,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go pq.Run(ctx, 0)
+	time.Sleep(50 * time.Millisecond)
+
+	// Mark a session completed
+	pq.MarkSessionCompleted("conv-123")
+
+	// Push a normal request and a boosted request
+	normalNotify := make(chan struct{})
+	boostNotify := make(chan struct{})
+
+	now := time.Now()
+	normalReq := &Request{
+		ReqID:         "normal",
+		UserID:        "user-A",
+		ModelName:     "m",
+		CorrelationID: "conv-other",
+		Priority:      1.0,
+		RequestTime:   now,
+		NotifyChan:    normalNotify,
+	}
+	boostReq := &Request{
+		ReqID:         "boosted",
+		UserID:        "user-B",
+		ModelName:     "m",
+		CorrelationID: "conv-123",
+		Priority:      100.0,
+		RequestTime:   now.Add(time.Millisecond),
+		NotifyChan:    boostNotify,
+	}
+
+	// Push normal first
+	if err := pq.PushRequest(normalReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+	if err := pq.PushRequest(boostReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// Both should eventually be dequeued since MaxConcurrent=2
+	for i := 0; i < 2; i++ {
+		select {
+		case <-normalNotify:
+			normalReq.Release()
+		case <-boostNotify:
+			boostReq.Release()
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Timeout waiting for request %d to be dequeued", i)
+		}
+	}
+}
+
+func TestSessionBoost_CorrelationIDField(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       0,
+		MaxQPS:              100,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     5 * time.Second,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	now := time.Now()
+
+	// Request without correlation ID should not get boost even if sessions exist
+	pq.MarkSessionCompleted("conv-123")
+
+	req := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "", // No correlation ID
+		Priority:      1.0,
+		RequestTime:   now,
+	}
+
+	if err := pq.PushRequest(req); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	popped, err := pq.popWhenAvailable(context.Background())
+	if err != nil {
+		t.Fatalf("Pop failed: %v", err)
+	}
+	if popped.SessionBoost {
+		t.Error("Request without CorrelationID should not have SessionBoost")
+	}
+}
+
+func TestSessionBoost_QPSModeIntegration(t *testing.T) {
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:       0,
+		MaxQPS:              1000,
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     5 * time.Second,
+		TokenWeight:         1.0,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	defer pq.Close()
+
+	// Mark session completed before anything starts
+	pq.MarkSessionCompleted("conv-fast")
+
+	results := make(chan string, 3)
+	now := time.Now()
+
+	// Push all requests BEFORE starting the Run loop to ensure ordering is determined by priority
+	reqs := []*Request{
+		{ReqID: "normal-1", UserID: "u1", ModelName: "m", CorrelationID: "conv-slow", Priority: 1.0, RequestTime: now, NotifyChan: make(chan struct{})},
+		{ReqID: "boosted", UserID: "u2", ModelName: "m", CorrelationID: "conv-fast", Priority: 50.0, RequestTime: now.Add(time.Millisecond), NotifyChan: make(chan struct{})},
+		{ReqID: "normal-2", UserID: "u3", ModelName: "m", CorrelationID: "", Priority: 2.0, RequestTime: now.Add(2 * time.Millisecond), NotifyChan: make(chan struct{})},
+	}
+
+	for _, r := range reqs {
+		if err := pq.PushRequest(r); err != nil {
+			t.Fatalf("PushRequest failed: %v", err)
+		}
+		localR := r
+		go func() {
+			<-localR.NotifyChan
+			results <- localR.ReqID
+		}()
+	}
+
+	// Now start the Run loop - it will dequeue in priority order
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go pq.Run(ctx, cfg.MaxQPS)
+
+	// First result should be the boosted one
+	select {
+	case id := <-results:
+		if id != "boosted" {
+			t.Errorf("Expected boosted request first, got %s", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for first dequeue")
+	}
+}
+
+func TestGetSessionTracker(t *testing.T) {
+	// Without session boost
+	pq1 := NewRequestPriorityQueue(nil)
+	if pq1.GetSessionTracker() != nil {
+		t.Error("GetSessionTracker should return nil when session boost is disabled")
+	}
+
+	// With session boost
+	cfg := FairnessQueueConfig{
+		SessionBoostEnabled: true,
+		SessionBoostTTL:     time.Minute,
+		TokenWeight:         1.0,
+	}
+	pq2 := NewRequestPriorityQueueWithConfig(nil, cfg, nil)
+	if pq2.GetSessionTracker() == nil {
+		t.Error("GetSessionTracker should return non-nil when session boost is enabled")
+	}
+}
