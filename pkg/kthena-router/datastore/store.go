@@ -63,7 +63,7 @@ var (
 
 const (
 	// defaultMetricsScrapeInterval is the default polling interval for pod metrics.
-	defaultMetricsScrapeInterval = 1 * time.Second
+	defaultMetricsScrapeInterval = 50 * time.Millisecond
 	metricsScrapeIntervalEnv     = "METRICS_SCRAPE_INTERVAL"
 
 	// onFlightSyncInterval caps Redis read traffic from SyncOnFlightCounts.
