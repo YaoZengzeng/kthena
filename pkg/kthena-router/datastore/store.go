@@ -480,6 +480,14 @@ func createFairnessQueueConfig() FairnessQueueConfig {
 		}
 	}
 
+	if v := os.Getenv("FAIRNESS_INFLIGHT_PER_POD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.InflightPerPod = n
+		} else {
+			klog.Warningf("Invalid FAIRNESS_INFLIGHT_PER_POD: %q, using default %d", v, cfg.InflightPerPod)
+		}
+	}
+
 	return cfg
 }
 
@@ -591,6 +599,7 @@ func (s *store) Enqueue(req *Request) error {
 		// Only dequeue when at least one pod has an empty vLLM waiting queue.
 		checker := s.makeBackendWaitingChecker()
 		newQueue := NewRequestPriorityQueueWithConfig(nil, s.fairnessQueueConfig, s.tokenTracker, checker)
+		newQueue.SetPodCounter(s.makePodCounter())
 		val, ok = s.requestWaitingQueue.LoadOrStore(modelName, newQueue)
 		if !ok {
 			queueCtx := s.rootCtx
@@ -618,12 +627,14 @@ func (s *store) makeBackendWaitingChecker() BackendWaitingChecker {
 	return func() bool {
 		hasCapacity := false
 		podCount := 0
+		var totalWaiting float64
 		s.pods.Range(func(key, value any) bool {
 			podInfo, ok := value.(*PodInfo)
 			if !ok || podInfo == nil {
 				return true
 			}
 			podCount++
+			totalWaiting += podInfo.RequestWaitingNum
 			if podInfo.RequestWaitingNum == 0 {
 				hasCapacity = true
 				return false // stop iterating, found a pod with capacity
@@ -634,7 +645,23 @@ func (s *store) makeBackendWaitingChecker() BackendWaitingChecker {
 		if podCount == 0 {
 			return true
 		}
+		if !hasCapacity {
+			klog.Infof("[BackendWaitingChecker] all %d pods busy, totalWaiting=%.0f", podCount, totalWaiting)
+		}
 		return hasCapacity
+	}
+}
+
+// makePodCounter returns a function that counts the number of registered backend pods.
+// Used by the fairness queue to limit inflight requests to one per pod.
+func (s *store) makePodCounter() func() int {
+	return func() int {
+		count := 0
+		s.pods.Range(func(key, value any) bool {
+			count++
+			return true
+		})
+		return count
 	}
 }
 

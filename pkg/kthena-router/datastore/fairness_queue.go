@@ -20,9 +20,8 @@ import (
 	"container/heap"
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -71,6 +70,11 @@ type FairnessQueueConfig struct {
 	// Requests from the same session (identified by X-Correlation-ID) that arrive
 	// within this window after the previous request completed will be boosted.
 	SessionBoostTTL time.Duration
+
+	// InflightPerPod is the maximum number of inflight requests allowed per backend pod
+	// in backpressure mode. The total inflight limit is InflightPerPod * podCount.
+	// Defaults to 1.
+	InflightPerPod int
 }
 
 // DefaultFairnessQueueConfig returns backward-compatible defaults.
@@ -85,6 +89,7 @@ func DefaultFairnessQueueConfig() FairnessQueueConfig {
 		SessionBoostEnabled:       false,
 		SessionBoostTTL:           60 * time.Second,
 		BackpressurePollInterval:  100 * time.Millisecond,
+		InflightPerPod:            1,
 	}
 }
 
@@ -212,6 +217,14 @@ type RequestPriorityQueue struct {
 	// backendChecker checks if backend pods have capacity (waiting queue empty).
 	// Used in backpressure mode to gate dequeue on backend readiness.
 	backendChecker BackendWaitingChecker
+
+	// Inflight tracking for backpressure mode: prevents flooding backends between metric scrapes.
+	// inflightCount tracks requests dequeued but not yet completed.
+	inflightCount atomic.Int64
+	// releaseCh is signaled when an inflight request completes, enabling immediate dequeue.
+	releaseCh chan struct{}
+	// podCounter returns the number of ready backend pods. Used to cap inflight at 1 per pod.
+	podCounter func() int
 }
 
 var _ heap.Interface = &RequestPriorityQueue{}
@@ -232,6 +245,7 @@ func NewRequestPriorityQueueWithConfig(metricsInstance *metrics.Metrics, cfg Fai
 	pq := &RequestPriorityQueue{
 		stopCh:       make(chan struct{}),
 		notifyCh:     make(chan struct{}, 1), // Buffered to prevent blocking
+		releaseCh:    make(chan struct{}, 1), // Buffered for release notification
 		heap:         make([]*Request, 0),
 		metrics:      metricsInstance,
 		config:       cfg,
@@ -304,9 +318,6 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 
 	heap.Push(pq, r)
 	queueLen := len(pq.heap)
-
-	// Check if the newly enqueued request landed at the head of the queue
-	isHead := queueLen > 0 && pq.heap[0] == r
 	pq.mu.Unlock()
 
 	// Update fairness queue size metrics
@@ -314,8 +325,11 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 		pq.metrics.IncFairnessQueueSize(r.ModelName, r.UserID)
 	}
 
-	// Log queue layout from head to tail after enqueue
-	pq.logQueueState(r.ReqID, isHead)
+	// Log only when session boost promotes a request to the head
+	if r.SessionBoost {
+		klog.Infof("[FairnessQueue] session boost: reqID=%s correlationID=%s promoted to head, queueLen=%d",
+			r.ReqID, r.CorrelationID, queueLen)
+	}
 
 	// Signal that a new item is available
 	select {
@@ -384,7 +398,6 @@ func (pq *RequestPriorityQueue) popWhenAvailable(ctx context.Context) (*Request,
 			}
 
 			queueDuration := time.Since(req.RequestTime)
-			remainingLen := len(pq.heap)
 
 			// Update fairness queue size metrics and record queue duration
 			if pq.metrics != nil {
@@ -394,9 +407,6 @@ func (pq *RequestPriorityQueue) popWhenAvailable(ctx context.Context) (*Request,
 			}
 
 			pq.mu.Unlock()
-
-			klog.Infof("[FairnessQueue] dequeue: reqID=%s user=%s model=%s priority=%.4f sessionBoost=%v waitTime=%v remainingQueueLen=%d",
-				req.ReqID, req.UserID, req.ModelName, req.Priority, req.SessionBoost, queueDuration, remainingLen)
 
 			return req, nil
 		}
@@ -506,15 +516,20 @@ func (pq *RequestPriorityQueue) runSessionCleanup(ctx context.Context) {
 }
 
 // runBackpressureMode dequeues requests only when backend pods have capacity.
-// It polls the backend waiting checker at a configurable interval and only
-// dequeues a request when the checker indicates that at least one pod has an
-// empty waiting queue.
+// It uses two-level admission control:
+//  1. Inflight limit: at most one inflight request per backend pod (prevents flooding
+//     between metric scrapes).
+//  2. Backend metrics check: at least one pod reports RequestWaitingNum == 0.
+//
+// When an inflight request completes (Release is called), the queue immediately
+// attempts to dequeue the next request without waiting for the next tick.
 func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 	pollInterval := pq.config.BackpressurePollInterval
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
 	}
-	klog.Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v", pollInterval)
+	klog.Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v",
+		pollInterval, pq.config.SessionBoostEnabled)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
@@ -523,26 +538,89 @@ func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 			return
 		case <-pq.stopCh:
 			return
+		case <-pq.releaseCh:
+			// A previous inflight request completed; try to dequeue immediately.
+			pq.tryBackpressureDequeue(ctx)
 		case <-ticker.C:
-			// Check if backend has capacity before attempting to dequeue
-			if !pq.backendChecker() {
-				continue
-			}
-			// Backend has capacity, try to dequeue
-			pq.mu.RLock()
-			queueLen := len(pq.heap)
-			pq.mu.RUnlock()
-			if queueLen == 0 {
-				continue
-			}
-			req, err := pq.popWhenAvailable(ctx)
-			if err != nil {
-				return
-			}
-			if req != nil && req.NotifyChan != nil {
-				close(req.NotifyChan)
-			}
+			pq.tryBackpressureDequeue(ctx)
 		}
+	}
+}
+
+// tryBackpressureDequeue attempts to dequeue one request if both the inflight limit
+// and the backend capacity check pass.
+func (pq *RequestPriorityQueue) tryBackpressureDequeue(ctx context.Context) {
+	// Determine inflight limit based on pod count and per-pod allowance.
+	perPod := pq.config.InflightPerPod
+	if perPod <= 0 {
+		perPod = 1
+	}
+	maxInflight := int64(perPod)
+	podCount := 0
+	if pq.podCounter != nil {
+		podCount = pq.podCounter()
+		if podCount > 0 {
+			maxInflight = int64(podCount) * int64(perPod)
+		}
+	}
+
+	currentInflight := pq.inflightCount.Load()
+
+	// Primary gate: inflight limit prevents flooding between metric scrapes.
+	if currentInflight >= maxInflight {
+		klog.Infof("[FairnessQueue] backpressure: inflight limit reached, inflight=%d maxInflight=%d pods=%d perPod=%d",
+			currentInflight, maxInflight, podCount, perPod)
+		return
+	}
+
+	// Secondary gate: backend metrics confirm at least one pod has capacity.
+	// Skip this check only when inflight==0 AND podCount==0 (no pods registered yet).
+	if !pq.backendChecker() {
+		pq.logBackendWaitingStatus(currentInflight, podCount)
+		return
+	}
+
+	// Check queue has items.
+	pq.mu.RLock()
+	queueLen := len(pq.heap)
+	pq.mu.RUnlock()
+	if queueLen == 0 {
+		return
+	}
+
+	req, err := pq.popWhenAvailable(ctx)
+	if err != nil {
+		return
+	}
+	if req == nil {
+		return
+	}
+
+	// Track inflight and set Release for feedback loop.
+	pq.inflightCount.Add(1)
+	releaseOnce := sync.Once{}
+	req.Release = func() {
+		releaseOnce.Do(func() {
+			pq.inflightCount.Add(-1)
+			// Signal the dequeue loop that a slot is free.
+			select {
+			case pq.releaseCh <- struct{}{}:
+			default:
+			}
+			if pq.metrics != nil {
+				pq.metrics.DecFairnessQueueInflight(req.ModelName)
+			}
+		})
+	}
+	if pq.metrics != nil {
+		pq.metrics.IncFairnessQueueInflight(req.ModelName)
+	}
+
+	klog.Infof("[FairnessQueue] backpressure dequeue: reqID=%s user=%s model=%s sessionBoost=%v inflight=%d/%d",
+		req.ReqID, req.UserID, req.ModelName, req.SessionBoost, pq.inflightCount.Load(), maxInflight)
+
+	if req.NotifyChan != nil {
+		close(req.NotifyChan)
 	}
 }
 
@@ -653,40 +731,25 @@ func (pq *RequestPriorityQueue) GetSessionTracker() *SessionTracker {
 	return pq.sessionTracker
 }
 
-// logQueueState logs the queue layout from head to tail after an enqueue,
-// and whether the newly enqueued request is at the head.
-// Must NOT hold pq.mu when calling this, as it acquires a read lock.
-func (pq *RequestPriorityQueue) logQueueState(enqueuedReqID string, isHead bool) {
+// SetPodCounter sets the function used to determine the number of ready backend pods.
+// This is used in backpressure mode to limit inflight requests to at most one per pod,
+// preventing flooding between metric scrapes.
+func (pq *RequestPriorityQueue) SetPodCounter(counter func() int) {
+	pq.podCounter = counter
+}
+
+// GetInflightCount returns the current number of inflight requests (dequeued but not released).
+func (pq *RequestPriorityQueue) GetInflightCount() int64 {
+	return pq.inflightCount.Load()
+}
+
+// logBackendWaitingStatus logs the backend waiting status when backpressure blocks dequeue.
+func (pq *RequestPriorityQueue) logBackendWaitingStatus(currentInflight int64, podCount int) {
 	pq.mu.RLock()
-	defer pq.mu.RUnlock()
+	queueLen := len(pq.heap)
+	pq.mu.RUnlock()
 
-	if len(pq.heap) == 0 {
-		return
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[FairnessQueue] enqueue reqID=%s ", enqueuedReqID))
-	if isHead {
-		sb.WriteString("-> HEAD | ")
-	} else {
-		sb.WriteString("| ")
-	}
-	sb.WriteString(fmt.Sprintf("queue(%d): [", len(pq.heap)))
-	maxItems := 20
-	for i, req := range pq.heap {
-		if i >= maxItems {
-			sb.WriteString(fmt.Sprintf(" ...+%d", len(pq.heap)-maxItems))
-			break
-		}
-		if i > 0 {
-			sb.WriteString(" <- ")
-		}
-		sb.WriteString(fmt.Sprintf("%s(pri=%.1f", req.ReqID, req.Priority))
-		if req.SessionBoost {
-			sb.WriteString(",boost")
-		}
-		sb.WriteString(")")
-	}
-	sb.WriteString("]")
-	klog.Info(sb.String())
+	klog.Infof("[FairnessQueue] backpressure: backend pods busy, holding dequeue. "+
+		"queueLen=%d inflight=%d pods=%d",
+		queueLen, currentInflight, podCount)
 }
