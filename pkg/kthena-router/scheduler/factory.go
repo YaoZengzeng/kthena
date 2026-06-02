@@ -85,6 +85,9 @@ func registerDefaultPlugins(registry *PluginRegistry) {
 	registry.registerScorePlugin(plugins.KVCacheAwarePluginName, func(args runtime.RawExtension) framework.ScorePlugin {
 		return plugins.NewKVCacheAware(args)
 	})
+	registry.registerScorePlugin(plugins.SessionAffinityPluginName, func(args runtime.RawExtension) framework.ScorePlugin {
+		return plugins.NewSessionAffinity(args)
+	})
 	// filterPlugin
 	registry.registerFilterPlugin(plugins.LeastRequestPluginName, func(args runtime.RawExtension) framework.FilterPlugin {
 		return plugins.NewLeastRequest(args)
@@ -111,7 +114,7 @@ func getFilterPlugins(registry *PluginRegistry, filterPluginMap []string, plugin
 	return list
 }
 
-func getScorePlugins(registry *PluginRegistry, prefixCache *plugins.PrefixCache, scorePluginMap map[string]int, pluginsArgMap map[string]runtime.RawExtension) []*scorePlugin {
+func getScorePlugins(registry *PluginRegistry, prefixCache *plugins.PrefixCache, sessionAffinity *plugins.SessionAffinity, scorePluginMap map[string]int, pluginsArgMap map[string]runtime.RawExtension) []*scorePlugin {
 	var list []*scorePlugin
 	for pluginName, weight := range scorePluginMap {
 		if weight < 0 {
@@ -122,6 +125,14 @@ func getScorePlugins(registry *PluginRegistry, prefixCache *plugins.PrefixCache,
 		if pluginName == plugins.PrefixCachePluginName {
 			list = append(list, &scorePlugin{
 				plugin: prefixCache,
+				weight: weight,
+			})
+			continue
+		}
+
+		if pluginName == plugins.SessionAffinityPluginName {
+			list = append(list, &scorePlugin{
+				plugin: sessionAffinity,
 				weight: weight,
 			})
 			continue

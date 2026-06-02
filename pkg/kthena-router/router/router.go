@@ -444,6 +444,7 @@ func (r *Router) doLoadbalance(c *gin.Context, modelRequest ModelRequest) {
 	ctx := &framework.Context{
 		Model:           modelName,
 		Prompt:          prompt,
+		CorrelationID:   c.Request.Header.Get("X-Correlation-ID"),
 		ModelServerName: modelServerName,
 		PDGroup:         pdGroup,
 		MetricsRecorder: metricsRecorder,

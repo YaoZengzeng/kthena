@@ -160,7 +160,7 @@ func TestGetScorePlugins(t *testing.T) {
 	// Create a mock prefix cache for testing
 	mockStore := datastore.New()
 	prefixCache := plugins.NewPrefixCache(mockStore, runtime.RawExtension{Raw: []byte(`{"blockSizeToHash": 64}`)})
-
+	sessionAffinity := plugins.NewSessionAffinity(runtime.RawExtension{})
 	tests := []struct {
 		name            string
 		scorePluginMap  map[string]int
@@ -249,7 +249,7 @@ func TestGetScorePlugins(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scorePlugins := getScorePlugins(registry, prefixCache, tt.scorePluginMap, tt.pluginsArgMap)
+			scorePlugins := getScorePlugins(registry, prefixCache, sessionAffinity, tt.scorePluginMap, tt.pluginsArgMap)
 
 			assert.Equal(t, tt.expectedCount, len(scorePlugins))
 
