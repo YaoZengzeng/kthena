@@ -1172,7 +1172,7 @@ func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequ
 		return fmt.Errorf("missing userId in request body and no X-Correlation-ID header")
 	}
 
-	klog.Infof("[FairnessScheduling] incoming request: reqID=%s user=%s model=%s",
+	klog.V(4).Infof("[FairnessScheduling] incoming request: reqID=%s user=%s model=%s",
 		requestID, userId, modelName)
 
 	// Create request-scoped context that unifies client disconnect and server timeout
@@ -1206,7 +1206,7 @@ func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequ
 		if queueReq.Release != nil {
 			defer queueReq.Release()
 		}
-		klog.Infof("[FairnessScheduling] request dequeued: reqID=%s user=%s model=%s sessionBoost=%v waitTime=%v",
+		klog.V(4).Infof("[FairnessScheduling] request dequeued: reqID=%s user=%s model=%s sessionBoost=%v waitTime=%v",
 			requestID, userId, modelName, queueReq.SessionBoost, time.Since(queueReq.RequestTime))
 		r.doLoadbalance(c, modelRequest)
 
@@ -1226,7 +1226,7 @@ func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequ
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, "Request processing timed out")
 			return fmt.Errorf("request processing timed out in fairness queue")
 		}
-		klog.Infof("[FairnessScheduling] request cancelled (client disconnected): reqID=%s correlationID=%s user=%s model=%s",
+		klog.V(4).Infof("[FairnessScheduling] request cancelled (client disconnected): reqID=%s correlationID=%s user=%s model=%s",
 			requestID, correlationID, userId, modelName)
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, "Client disconnected while waiting in fairness queue")
 		return fmt.Errorf("client disconnected while waiting in fairness queue")

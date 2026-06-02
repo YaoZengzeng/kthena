@@ -327,7 +327,7 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 
 	// Log only when session boost promotes a request to the head
 	if r.SessionBoost {
-		klog.Infof("[FairnessQueue] session boost: reqID=%s correlationID=%s promoted to head, queueLen=%d",
+		klog.V(4).Infof("[FairnessQueue] session boost: reqID=%s correlationID=%s promoted to head, queueLen=%d",
 			r.ReqID, r.CorrelationID, queueLen)
 	}
 
@@ -528,7 +528,7 @@ func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
 	}
-	klog.Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v",
+	klog.V(4).Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v",
 		pollInterval, pq.config.SessionBoostEnabled)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -568,7 +568,7 @@ func (pq *RequestPriorityQueue) tryBackpressureDequeue(ctx context.Context) {
 
 	// Primary gate: inflight limit prevents flooding between metric scrapes.
 	if currentInflight >= maxInflight {
-		klog.Infof("[FairnessQueue] backpressure: inflight limit reached, inflight=%d maxInflight=%d pods=%d perPod=%d",
+		klog.V(4).Infof("[FairnessQueue] backpressure: inflight limit reached, inflight=%d maxInflight=%d pods=%d perPod=%d",
 			currentInflight, maxInflight, podCount, perPod)
 		return
 	}
@@ -616,7 +616,7 @@ func (pq *RequestPriorityQueue) tryBackpressureDequeue(ctx context.Context) {
 		pq.metrics.IncFairnessQueueInflight(req.ModelName)
 	}
 
-	klog.Infof("[FairnessQueue] backpressure dequeue: reqID=%s user=%s model=%s sessionBoost=%v inflight=%d/%d",
+	klog.V(4).Infof("[FairnessQueue] backpressure dequeue: reqID=%s user=%s model=%s sessionBoost=%v inflight=%d/%d",
 		req.ReqID, req.UserID, req.ModelName, req.SessionBoost, pq.inflightCount.Load(), maxInflight)
 
 	if req.NotifyChan != nil {
@@ -749,7 +749,7 @@ func (pq *RequestPriorityQueue) logBackendWaitingStatus(currentInflight int64, p
 	queueLen := len(pq.heap)
 	pq.mu.RUnlock()
 
-	klog.Infof("[FairnessQueue] backpressure: backend pods busy, holding dequeue. "+
+	klog.V(4).Infof("[FairnessQueue] backpressure: backend pods busy, holding dequeue. "+
 		"queueLen=%d inflight=%d pods=%d",
 		queueLen, currentInflight, podCount)
 }
