@@ -480,6 +480,14 @@ func createFairnessQueueConfig() FairnessQueueConfig {
 		}
 	}
 
+	if v := os.Getenv("FAIRNESS_SESSION_BOOST_GRACE_PERIOD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			cfg.SessionBoostGracePeriod = d
+		} else {
+			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_GRACE_PERIOD: %q, using default %v", v, cfg.SessionBoostGracePeriod)
+		}
+	}
+
 	if v := os.Getenv("FAIRNESS_INFLIGHT_PER_POD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.InflightPerPod = n

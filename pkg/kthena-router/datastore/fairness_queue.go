@@ -75,6 +75,14 @@ type FairnessQueueConfig struct {
 	// in backpressure mode. The total inflight limit is InflightPerPod * podCount.
 	// Defaults to 1.
 	InflightPerPod int
+
+	// SessionBoostGracePeriod is the duration to wait after a release before dequeuing
+	// the next request in backpressure mode when session boost is enabled.
+	// This gives the same session time to submit a follow-up request that benefits
+	// from prefix cache, rather than immediately dispatching an unrelated request.
+	// If a session-boosted request arrives during this window, it is dequeued immediately.
+	// Defaults to 50ms. Set to 0 to disable the grace period.
+	SessionBoostGracePeriod time.Duration
 }
 
 // DefaultFairnessQueueConfig returns backward-compatible defaults.
@@ -90,6 +98,7 @@ func DefaultFairnessQueueConfig() FairnessQueueConfig {
 		SessionBoostTTL:           60 * time.Second,
 		BackpressurePollInterval:  100 * time.Millisecond,
 		InflightPerPod:            1,
+		SessionBoostGracePeriod:   50 * time.Millisecond,
 	}
 }
 
@@ -523,13 +532,18 @@ func (pq *RequestPriorityQueue) runSessionCleanup(ctx context.Context) {
 //
 // When an inflight request completes (Release is called), the queue immediately
 // attempts to dequeue the next request without waiting for the next tick.
+//
+// Session Grace Period: When session boost is enabled and SessionBoostGracePeriod > 0,
+// a release event triggers a short wait before dequeuing. This gives the same session
+// time to submit a follow-up request that can leverage prefix cache. If a session-boosted
+// request arrives during the grace period, it is dequeued immediately without waiting.
 func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 	pollInterval := pq.config.BackpressurePollInterval
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
 	}
-	klog.V(4).Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v",
-		pollInterval, pq.config.SessionBoostEnabled)
+	klog.V(4).Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v, gracePeriod=%v",
+		pollInterval, pq.config.SessionBoostEnabled, pq.config.SessionBoostGracePeriod)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
@@ -539,10 +553,64 @@ func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 		case <-pq.stopCh:
 			return
 		case <-pq.releaseCh:
-			// A previous inflight request completed; try to dequeue immediately.
-			pq.tryBackpressureDequeue(ctx)
+			// A previous inflight request completed.
+			// If session boost grace period is enabled, wait briefly for a
+			// same-session follow-up request to arrive (higher prefix cache hit).
+			if pq.config.SessionBoostEnabled && pq.config.SessionBoostGracePeriod > 0 {
+				pq.waitGraceAndDequeue(ctx)
+			} else {
+				pq.tryBackpressureDequeue(ctx)
+			}
 		case <-ticker.C:
 			pq.tryBackpressureDequeue(ctx)
+		}
+	}
+}
+
+// isHeadSessionBoosted checks if the highest-priority request in the queue has a session boost.
+func (pq *RequestPriorityQueue) isHeadSessionBoosted() bool {
+	pq.mu.RLock()
+	defer pq.mu.RUnlock()
+	if len(pq.heap) == 0 {
+		return false
+	}
+	return pq.heap[0].SessionBoost
+}
+
+// waitGraceAndDequeue waits up to SessionBoostGracePeriod for a session-boosted
+// request to arrive at the head of the queue. If one arrives, it dequeues immediately.
+// If the grace period expires without a session-boosted arrival, it dequeues normally.
+// If the queue head is already session-boosted, skips the wait entirely.
+func (pq *RequestPriorityQueue) waitGraceAndDequeue(ctx context.Context) {
+	// Fast path: head is already session-boosted, no need to wait.
+	if pq.isHeadSessionBoosted() {
+		klog.V(4).Info("[FairnessQueue] grace: head already boosted, skipping wait")
+		pq.tryBackpressureDequeue(ctx)
+		return
+	}
+
+	klog.V(4).Infof("[FairnessQueue] grace: starting grace period %v", pq.config.SessionBoostGracePeriod)
+	timer := time.NewTimer(pq.config.SessionBoostGracePeriod)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-pq.stopCh:
+			return
+		case <-pq.notifyCh:
+			// A new request was pushed; check if the head is now session-boosted.
+			if pq.isHeadSessionBoosted() {
+				klog.V(4).Info("[FairnessQueue] grace period: session-boosted request arrived, dequeuing immediately")
+				pq.tryBackpressureDequeue(ctx)
+				return
+			}
+			// Not session-boosted; continue waiting for grace period to expire.
+		case <-timer.C:
+			// Grace period expired; dequeue whatever is at the head.
+			pq.tryBackpressureDequeue(ctx)
+			return
 		}
 	}
 }

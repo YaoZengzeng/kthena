@@ -1488,3 +1488,311 @@ func TestGetSessionTracker(t *testing.T) {
 		t.Error("GetSessionTracker should return non-nil when session boost is enabled")
 	}
 }
+
+func TestSessionBoostGracePeriod_BoostedRequestArrivesWithinGrace(t *testing.T) {
+	// When a request completes and releases, the grace period should wait for
+	// a session-boosted follow-up. If one arrives during the grace, it gets dequeued
+	// immediately instead of waiting for the full grace period.
+	checker := func() bool { return true }
+
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:            0,
+		MaxQPS:                   100,
+		SessionBoostEnabled:      true,
+		SessionBoostTTL:          5 * time.Second,
+		SessionBoostGracePeriod:  200 * time.Millisecond,
+		TokenWeight:              1.0,
+		BackpressurePollInterval: 50 * time.Millisecond, // Fast tick to get req1 dequeued quickly
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil, checker)
+	pq.SetPodCounter(func() int { return 1 }) // 1 pod => max 1 inflight
+	defer pq.Close()
+
+	now := time.Now()
+	// First request to occupy the inflight slot
+	req1 := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "session-1",
+		Priority:      1.0,
+		RequestTime:   now,
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(req1); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go pq.Run(ctx, cfg.MaxQPS)
+
+	// req1 should be dequeued on the first tick
+	select {
+	case <-req1.NotifyChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: req-1 should be dequeued")
+	}
+
+	// Mark session-1 as completed (simulates response received)
+	pq.MarkSessionCompleted("session-1")
+
+	// Push a non-boosted request before releasing
+	nonBoosted := &Request{
+		ReqID:         "req-non-boosted",
+		UserID:        "user-B",
+		ModelName:     "model-1",
+		CorrelationID: "other-session",
+		Priority:      1.0,
+		RequestTime:   now.Add(time.Millisecond),
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(nonBoosted); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// Release req1 — this triggers the grace period
+	req1.Release()
+
+	// During the grace period, push a session-boosted follow-up
+	time.Sleep(20 * time.Millisecond) // Small delay to ensure we're in grace period
+	boostedFollowUp := &Request{
+		ReqID:         "req-boosted-followup",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "session-1", // Same session -> will be boosted
+		Priority:      50.0,        // High priority number (lower priority), but boost overrides
+		RequestTime:   now.Add(2 * time.Millisecond),
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(boostedFollowUp); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// The boosted follow-up should be dequeued BEFORE the non-boosted request
+	// and WITHIN the grace period (not after full grace expires)
+	select {
+	case <-boostedFollowUp.NotifyChan:
+		// Success: session-boosted follow-up was prioritized
+	case <-nonBoosted.NotifyChan:
+		t.Fatal("Non-boosted request should not be dequeued before the session-boosted follow-up")
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("Timeout: boosted follow-up should be dequeued within grace period")
+	}
+}
+
+func TestSessionBoostGracePeriod_NoBoostArrives(t *testing.T) {
+	// When no session-boosted request arrives during the grace period,
+	// the queue should dequeue the normal head after the grace expires.
+	checker := func() bool { return true }
+
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:            0,
+		MaxQPS:                   100,
+		SessionBoostEnabled:      true,
+		SessionBoostTTL:          5 * time.Second,
+		SessionBoostGracePeriod:  100 * time.Millisecond,
+		TokenWeight:              1.0,
+		BackpressurePollInterval: 50 * time.Millisecond,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil, checker)
+	pq.SetPodCounter(func() int { return 1 })
+	defer pq.Close()
+
+	now := time.Now()
+	req1 := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "session-1",
+		Priority:      1.0,
+		RequestTime:   now,
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(req1); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go pq.Run(ctx, cfg.MaxQPS)
+
+	select {
+	case <-req1.NotifyChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: req-1 should be dequeued")
+	}
+
+	// Push a normal request (not session-boosted)
+	normalReq := &Request{
+		ReqID:         "req-normal",
+		UserID:        "user-B",
+		ModelName:     "model-1",
+		CorrelationID: "other",
+		Priority:      1.0,
+		RequestTime:   now.Add(time.Millisecond),
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(normalReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// Release req1 — starts grace period
+	start := time.Now()
+	req1.Release()
+
+	// No boosted request arrives, so normal request should be dequeued after grace period
+	select {
+	case <-normalReq.NotifyChan:
+		elapsed := time.Since(start)
+		// Should take at least the grace period (100ms) but not too long
+		if elapsed < 80*time.Millisecond {
+			t.Errorf("Dequeue happened too early (before grace period): %v", elapsed)
+		}
+		if elapsed > 500*time.Millisecond {
+			t.Errorf("Dequeue took too long after grace period: %v", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: normal request should be dequeued after grace period expires")
+	}
+}
+
+func TestSessionBoostGracePeriod_HeadAlreadyBoosted(t *testing.T) {
+	// When the head of the queue is already a session-boosted request at the
+	// time of release, skip the grace period and dequeue immediately.
+	checker := func() bool { return true }
+
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:            0,
+		MaxQPS:                   100,
+		SessionBoostEnabled:      true,
+		SessionBoostTTL:          5 * time.Second,
+		SessionBoostGracePeriod:  500 * time.Millisecond, // Long grace to prove skip
+		TokenWeight:              1.0,
+		BackpressurePollInterval: 50 * time.Millisecond,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil, checker)
+	pq.SetPodCounter(func() int { return 1 })
+	defer pq.Close()
+
+	now := time.Now()
+	req1 := &Request{
+		ReqID:         "req-1",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "session-1",
+		Priority:      1.0,
+		RequestTime:   now,
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(req1); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go pq.Run(ctx, cfg.MaxQPS)
+
+	select {
+	case <-req1.NotifyChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: req-1 should be dequeued")
+	}
+
+	// Mark session and push a boosted follow-up BEFORE releasing
+	pq.MarkSessionCompleted("session-1")
+	boostedReq := &Request{
+		ReqID:         "req-boosted",
+		UserID:        "user-A",
+		ModelName:     "model-1",
+		CorrelationID: "session-1",
+		Priority:      10.0,
+		RequestTime:   now.Add(time.Millisecond),
+		NotifyChan:    make(chan struct{}),
+	}
+	if err := pq.PushRequest(boostedReq); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// Release req1 — head is already boosted, should skip grace period
+	start := time.Now()
+	req1.Release()
+
+	select {
+	case <-boostedReq.NotifyChan:
+		elapsed := time.Since(start)
+		// Should be fast (no grace wait since head is already boosted)
+		if elapsed > 200*time.Millisecond {
+			t.Errorf("Grace period should have been skipped (head already boosted), but took %v", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: boosted request should be dequeued immediately (no grace wait)")
+	}
+}
+
+func TestSessionBoostGracePeriod_DisabledWhenZero(t *testing.T) {
+	// When SessionBoostGracePeriod is 0, release should trigger immediate dequeue
+	// even with session boost enabled (backward compatible behavior).
+	checker := func() bool { return true }
+
+	cfg := FairnessQueueConfig{
+		MaxConcurrent:            0,
+		MaxQPS:                   100,
+		SessionBoostEnabled:      true,
+		SessionBoostTTL:          5 * time.Second,
+		SessionBoostGracePeriod:  0, // Disabled
+		TokenWeight:              1.0,
+		BackpressurePollInterval: 50 * time.Millisecond,
+	}
+	pq := NewRequestPriorityQueueWithConfig(nil, cfg, nil, checker)
+	pq.SetPodCounter(func() int { return 1 })
+	defer pq.Close()
+
+	now := time.Now()
+	req1 := &Request{
+		ReqID:       "req-1",
+		UserID:      "user-A",
+		ModelName:   "model-1",
+		Priority:    1.0,
+		RequestTime: now,
+		NotifyChan:  make(chan struct{}),
+	}
+	req2 := &Request{
+		ReqID:       "req-2",
+		UserID:      "user-B",
+		ModelName:   "model-1",
+		Priority:    2.0,
+		RequestTime: now.Add(time.Millisecond),
+		NotifyChan:  make(chan struct{}),
+	}
+	if err := pq.PushRequest(req1); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+	if err := pq.PushRequest(req2); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go pq.Run(ctx, cfg.MaxQPS)
+
+	select {
+	case <-req1.NotifyChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: req-1 should be dequeued")
+	}
+
+	// Release -> should dequeue immediately (no grace period)
+	start := time.Now()
+	req1.Release()
+
+	select {
+	case <-req2.NotifyChan:
+		elapsed := time.Since(start)
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Expected immediate dequeue with grace period disabled, took %v", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: req-2 should be dequeued immediately when grace period is 0")
+	}
+}
