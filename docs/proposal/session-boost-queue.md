@@ -1,5 +1,5 @@
 ---
-title: Standalone Session Boost Queue for Multi-Turn Conversation Prefix Cache Optimization
+title: Session Boost Queue for Multi-Turn Conversation Prefix Cache Optimization
 authors:
 - "@kthena-contributors"
 reviewers:
@@ -11,11 +11,11 @@ creation-date: 2026-06-03
 
 ---
 
-## Standalone Session Boost Queue for Multi-Turn Conversation Prefix Cache Optimization
+## Session Boost Queue for Multi-Turn Conversation Prefix Cache Optimization
 
 ### Summary
 
-This proposal introduces a **standalone Session Boost Queue** that is decoupled from the existing fairness scheduling queue. The Session Boost Queue independently provides session-aware priority boosting for multi-turn conversations, allowing follow-up requests in the same conversation session to be prioritized for processing. This maximizes **prefix cache hit rate** on LLM inference backends (e.g., vLLM), significantly reducing Time-to-First-Token (TTFT) for multi-turn conversations without requiring the fairness scheduling system to be enabled.
+This proposal introduces a **Session Boost Queue** that provides session-aware priority boosting for multi-turn conversations. It allows follow-up requests in the same conversation session to be prioritized for processing, maximizing **prefix cache hit rate** on LLM inference backends (e.g., vLLM) and significantly reducing Time-to-First-Token (TTFT) for multi-turn conversations.
 
 ### Motivation
 
@@ -23,26 +23,19 @@ In multi-turn conversation scenarios (e.g., ChatGPT-like interactions), each fol
 
 However, without session-aware scheduling, a follow-up request from the same conversation may be queued behind unrelated requests from other users. By the time it reaches the backend, the prefix cache may have been evicted, forcing a full recomputation.
 
-Previously, session boost was tightly coupled with the fairness scheduling queue (`FairnessQueue`). Users had to enable both `ENABLE_FAIRNESS_SCHEDULING=true` and `FAIRNESS_SESSION_BOOST_ENABLED=true` to activate session boost. This coupling was problematic because:
-
-1. **Different goals**: Fairness scheduling ensures equitable resource allocation among users based on token usage. Session boost optimizes for prefix cache utilization. These are orthogonal concerns.
-2. **Deployment friction**: Operators who only want prefix cache optimization were forced to also enable fairness scheduling, adding complexity and potentially unwanted behavior.
-3. **Testing complexity**: Entangled logic made both features harder to test, debug, and reason about independently.
-
-With this proposal, session boost has been fully removed from the fairness queue and exists only as a standalone feature.
+The Session Boost Queue addresses this problem with a dedicated, lightweight priority queue that promotes follow-up requests from recently completed sessions to the head of the queue.
 
 #### Goals
 
-1. **Independent activation**: Session boost can be enabled via `ENABLE_SESSION_BOOST=true` without requiring `ENABLE_FAIRNESS_SCHEDULING`.
+1. **Simple activation**: Session boost can be enabled via `ENABLE_SESSION_BOOST=true`.
 2. **Configurable session identification**: Users can configure which HTTP header identifies conversation sessions via `SESSION_BOOST_HEADER` (defaults to `X-Correlation-ID`).
 3. **Prefix cache optimization**: Prioritize follow-up requests from recently completed sessions to maximize warm cache hits.
 4. **Grace period**: After a request completes, briefly hold the dequeue slot for a potential follow-up from the same session before dispatching unrelated requests.
-5. **Backpressure-aware**: Respect backend pod capacity to avoid flooding, using the same two-level admission control as the fairness queue.
-6. **Clean separation**: Session boost logic is entirely removed from the fairness queue; the two features have no code coupling.
+5. **Backpressure-aware**: Respect backend pod capacity to avoid flooding, using two-level admission control (inflight limit + backend metrics).
 
 #### Non-Goals
 
-1. **Cross-router session state coordination**: Each router instance maintains independent session state (same as fairness queue design).
+1. **Cross-router session state coordination**: Each router instance maintains independent session state.
 2. **Guaranteed pod affinity**: Session boost only prioritizes queue ordering; it does not guarantee the request routes to the same pod (that's the domain of session sticky).
 3. **Persistent session state**: Session tracking state does not survive router restarts.
 4. **Replacing session sticky**: Session boost complements but does not replace pod-level session affinity for stateful inference.
@@ -51,73 +44,65 @@ With this proposal, session boost has been fully removed from the fairness queue
 
 #### Architecture
 
-The Session Boost Queue is a standalone priority queue that sits in the request processing pipeline between the router's HTTP handler and the backend load balancer. It operates independently of the fairness queue.
+The Session Boost Queue is a priority queue that sits in the request processing pipeline between the router's HTTP handler and the backend load balancer.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Request Flow                                    │
+│                          Request Flow                                   │
 │                                                                         │
 │  HTTP Request                                                           │
 │       │                                                                 │
 │       ▼                                                                 │
-│  ┌─────────┐    ┌──────────────────┐    ┌──────────────────────────┐   │
-│  │  Router  │───▶│ Session Boost Q  │───▶│  Backend Load Balancer   │   │
-│  │ Handler  │    │ (ENABLE_SESSION  │    │  (scheduler + plugins)   │   │
-│  │          │    │  _BOOST=true)    │    │                          │   │
-│  └─────────┘    └──────────────────┘    └──────────────────────────┘   │
-│       │                                                                 │
-│       │ (OR, if fairness scheduling is enabled instead)                 │
-│       ▼                                                                 │
-│  ┌──────────────────────┐                                               │
-│  │  Fairness Queue       │───▶ Backend Load Balancer                    │
-│  │  (ENABLE_FAIRNESS_   │                                               │
-│  │   SCHEDULING=true)   │                                               │
-│  └──────────────────────┘                                               │
+│  ┌───────────┐    ┌──────────────────┐    ┌──────────────────────────┐  │
+│  │  Router   │───▶│ Session Boost Q  │───▶│  Backend Load Balancer   │  │
+│  │  Handler  │    │ (ENABLE_SESSION  │    │  (scheduler + plugins)   │  │
+│  │           │    │  _BOOST=true)    │    │                          │  │
+│  └───────────┘    └──────────────────┘    └──────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Core Mechanism: Session Tracking and Priority Boosting
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│              Session Boost Queue Internals                  │
-│                                                            │
-│  ┌──────────────────┐      ┌─────────────────────────┐    │
-│  │  SessionTracker   │◀────│  MarkSessionCompleted()  │    │
-│  │                   │      │  (after response sent)   │    │
-│  │  map[corrID]time  │      └─────────────────────────┘    │
-│  │  TTL: 60s default │                                     │
-│  └────────┬─────────┘                                      │
-│           │                                                 │
-│           │ HasRecentCompletion(corrID)?                    │
-│           ▼                                                 │
-│  ┌──────────────────┐                                      │
-│  │   PushRequest()   │                                     │
-│  │                   │                                      │
-│  │  if recent ───▶ SessionBoost = true                     │
-│  │  else      ───▶ SessionBoost = false                    │
-│  └────────┬─────────┘                                      │
-│           │                                                 │
-│           ▼                                                 │
-│  ┌──────────────────────────────────────┐                  │
-│  │         Priority Heap                 │                  │
-│  │                                       │                  │
-│  │  Ordering:                            │                  │
-│  │  1. SessionBoost=true > false         │                  │
-│  │  2. Within same boost: FIFO           │                  │
-│  │                                       │                  │
-│  │  [Boosted-1] [Boosted-2] [Normal-1]  │                  │
-│  └──────────────────────────────────────┘                  │
-│           │                                                 │
-│           ▼                                                 │
-│  ┌──────────────────────────────────────┐                  │
-│  │    Backpressure Dequeue Gate          │                  │
-│  │                                       │                  │
-│  │  Gate 1: inflight < pods * perPod    │                  │
-│  │  Gate 2: backendChecker() == true    │                  │
-│  │  Gate 3: grace period (optional)     │                  │
-│  └──────────────────────────────────────┘                  │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│          Session Boost Queue Internals                   │
+│                                                          │
+│  ┌──────────────────┐     ┌─────────────────────────┐    │
+│  │ SessionTracker   │◀────│ MarkSessionCompleted()  │    │
+│  │                  │     │ (after response sent)   │    │
+│  │ map[corrID]time  │     └─────────────────────────┘    │
+│  │ TTL: 60s default │                                    │
+│  └────────┬─────────┘                                    │
+│            │                                             │
+│            │ HasRecentCompletion(corrID)?                │
+│            ▼                                             │
+│  ┌──────────────────┐                                    │
+│  │  PushRequest()   │                                    │
+│  │                  │                                    │
+│  │  if recent ───▶ SessionBoost = true                   │
+│  │  else      ───▶ SessionBoost = false                  │
+│  └────────┬─────────┘                                    │
+│            │                                             │
+│            ▼                                             │
+│  ┌──────────────────────────────────────┐                │
+│  │       Priority Heap                  │                │
+│  │                                      │                │
+│  │  Ordering:                           │                │
+│  │  1. SessionBoost=true > false        │                │
+│  │  2. Within same boost: FIFO          │                │
+│  │                                      │                │
+│  │  [Boosted-1] [Boosted-2] [Normal-1]  │                │
+│  └──────────────────────────────────────┘                │
+│            │                                             │
+│            ▼                                             │
+│  ┌──────────────────────────────────────┐                │
+│  │  Backpressure Dequeue Gate           │                │
+│  │                                      │                │
+│  │  Gate 1: inflight < pods * perPod    │                │
+│  │  Gate 2: backendChecker() == true    │                │
+│  │  Gate 3: grace period (optional)     │                │
+│  └──────────────────────────────────────┘                │
+└──────────────────────────────────────────────────────────┘
 ```
 
 #### Session Boost Lifecycle (Multi-Turn Conversation)
@@ -128,20 +113,20 @@ Time ─────────────────────────
 User A, Session "conv-123":
 
   Turn 1: "Hello, tell me about Kubernetes"
-  ┌─────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────────┐
-  │  Enqueue │───▶│  Dequeue  │───▶│  Process on  │───▶│ MarkCompleted  │
-  │  (no     │    │  (normal  │    │  Pod-X       │    │ ("conv-123")   │
-  │   boost) │    │   order)  │    │              │    │                │
-  └─────────┘    └──────────┘    └──────────────┘    └───────┬────────┘
+  ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────────┐
+  │ Enqueue  │──▶│  Dequeue │───▶│ Process on   │──▶│ MarkCompleted  │
+  │ (no      │    │  (normal │    │ Pod-X        │    │ ("conv-123")   │
+  │  boost)  │    │   order) │    │              │    │                │
+  └──────────┘    └──────────┘    └──────────────┘    └───────┬────────┘
                                                               │
-                              SessionTracker["conv-123"] = now │
+                            SessionTracker["conv-123"] = now  │
                                                               │
-  Turn 2: "Can you give more details on pods?"               │
-  ┌─────────┐                                                 │
-  │  Enqueue │ ◀── HasRecentCompletion("conv-123") = true ────┘
-  │  (BOOST  │     (within TTL)
-  │   =true) │
-  └────┬────┘
+  Turn 2: "Can you give more details on pods?"                │
+  ┌──────────┐                                                │
+  │  Enqueue  │ ◀── HasRecentCompletion("conv-123") = true ───┘
+  │  (BOOST   │     (within TTL)
+  │   =true)  │
+  └────┬─────┘
        │
        ▼ (Promoted to heap head, ahead of all non-boosted requests)
   ┌──────────┐    ┌──────────────┐
@@ -159,48 +144,38 @@ Timeline:
          ┌─ req-1 completes, Release() called
          │
          │  ┌── Grace Period (default 50ms) ──┐
-         │  │                                   │
-         ▼  ▼                                   ▼
-    ─────┼──┼───────────────────────────────────┼─────
-         │  │                                   │
-         │  │  Case A: Boosted request arrives  │
-         │  │  during grace → dequeue immediately│
-         │  │                                   │
-         │  │  Case B: No boost arrives →       │
-         │  │  dequeue normal head after grace  │
-         │  │                                   │
-         │  │  Case C: Head already boosted →   │
-         │  │  skip grace, dequeue immediately  │
-         │  └───────────────────────────────────┘
+         │  │                                  │
+         ▼  ▼                                  ▼
+    ─────┼──┼──────────────────────────────────┼─────
+         │  │                                  │
+         │  │  Case A: Boosted request arrives │
+         │  │  during grace → dequeue now      │
+         │  │                                  │
+         │  │  Case B: No boost arrives →      │
+         │  │  dequeue normal head after grace │
+         │  │                                  │
+         │  │  Case C: Head already boosted →  │
+         │  │  skip grace, dequeue immediately │
+         │  └──────────────────────────────────┘
 ```
 
 #### Configuration
 
 | Environment Variable             | Default            | Description                                        |
 | -------------------------------- | ------------------ | -------------------------------------------------- |
-| `ENABLE_SESSION_BOOST`           | `false`            | Enable standalone session boost queue              |
+| `ENABLE_SESSION_BOOST`           | `false`            | Enable session boost queue                         |
 | `SESSION_BOOST_HEADER`           | `X-Correlation-ID` | HTTP header used to identify conversation sessions |
 | `SESSION_BOOST_TTL`              | `60s`              | Duration after which a session boost expires       |
 | `SESSION_BOOST_GRACE_PERIOD`     | `50ms`             | Wait time after release for same-session follow-up |
 | `SESSION_BOOST_POLL_INTERVAL`    | `100ms`            | Backend capacity polling interval                  |
 | `SESSION_BOOST_INFLIGHT_PER_POD` | `1`                | Max inflight requests per backend pod              |
 
-#### Comparison with Fairness Queue
-
-| Aspect            | Session Boost Queue                | Fairness Queue                              |
-| ----------------- | ---------------------------------- | ------------------------------------------- |
-| Activation        | `ENABLE_SESSION_BOOST=true`        | `ENABLE_FAIRNESS_SCHEDULING=true`           |
-| Priority ordering | Boosted > Non-boosted, FIFO within | Token-usage priority, FIFO within same user |
-| Requires user ID  | No (optional)                      | Yes (for fairness priority calculation)     |
-| Queue discipline  | Session priority + FIFO            | Token-usage fairness                        |
-| Use case          | Pure prefix cache optimization     | Multi-tenant fairness resource allocation   |
-
 ### Design Details
 
 #### Data Structures
 
 ```go
-// SessionBoostQueueConfig - standalone configuration
+// SessionBoostQueueConfig configuration
 type SessionBoostQueueConfig struct {
     SessionIDHeader          string         // HTTP header for session identification (default: "X-Correlation-ID")
     SessionBoostTTL          time.Duration  // How long a session boost is valid
@@ -209,7 +184,7 @@ type SessionBoostQueueConfig struct {
     InflightPerPod           int            // Max concurrent requests per pod
 }
 
-// SessionBoostQueue - standalone queue
+// SessionBoostQueue
 type SessionBoostQueue struct {
     heap           sessionBoostHeap     // Min-heap: boosted first, then FIFO
     sessionTracker *SessionTracker      // Tracks recently completed sessions
@@ -246,7 +221,7 @@ When a request with the configured session header (e.g., `X-Correlation-ID: conv
 
 #### Backpressure Control
 
-The queue uses two-level admission control identical to the fairness queue:
+The queue uses two-level admission control:
 
 1. **Inflight limit**: At most `InflightPerPod * podCount` requests can be in-flight simultaneously. This prevents flooding backends between metric scrapes.
 2. **Backend metrics check**: The `BackendWaitingChecker` polls backend pod metrics (e.g., vLLM's `RequestWaitingNum`) to confirm at least one pod has capacity.
@@ -275,7 +250,7 @@ Human users typically take 1-50ms between receiving a response and submitting th
 
 #### 3. No User ID Requirement
 
-Unlike fairness scheduling which requires user identification for priority calculation, session boost only needs the `X-Correlation-ID` header. This simplifies integration for use cases where user authentication is not needed but prefix cache optimization is desired.
+Session boost only needs the configured session header (default: `X-Correlation-ID`). This simplifies integration for use cases where user authentication is not needed but prefix cache optimization is desired.
 
 #### 4. Complementary with Session Sticky
 
@@ -284,36 +259,3 @@ When combined with session sticky routing (which routes the same session to the 
 - **Routed to the same pod** (via session sticky)
 
 This combination maximizes prefix cache benefits: the request arrives quickly AND hits the pod where the cache is stored.
-
-### Test Plan
-
-- Unit tests for `SessionBoostQueue` covering:
-  - Basic priority ordering (boosted vs non-boosted)
-  - FIFO ordering within same boost status
-  - Session boost expiration (TTL)
-  - Multiple concurrent sessions
-  - Backpressure mode with inflight limits
-  - Grace period with boosted request arriving during grace
-  - Grace period expiration (normal dequeue after grace)
-  - Direct mode (no backpressure checker)
-  - Cancelled request handling
-  - Empty correlation ID (no boost)
-- Integration tests verifying standalone activation without fairness scheduling
-- Existing fairness queue tests continue to pass (session boost fully removed from fairness queue)
-
-### Alternatives Considered
-
-1. **Keep session boost coupled with fairness queue**: Rejected because it forces users to enable fairness scheduling just to get prefix cache optimization. The coupling has been fully removed.
-2. **Implement as a scheduler plugin**: Rejected because scheduler plugins operate on already-dequeued requests and cannot provide queuing-level priority.
-3. **Client-side retry with priority headers**: Rejected because it requires client changes and doesn't guarantee ordering.
-
-### Implementation
-
-The implementation adds:
-- `pkg/kthena-router/datastore/session_boost_queue.go` — Standalone `SessionBoostQueue` with its own heap, session tracker, and backpressure logic.
-- `pkg/kthena-router/datastore/session_boost_queue_test.go` — Comprehensive unit tests.
-- Store integration via `EnqueueSessionBoost()` method.
-- Router integration via `handleSessionBoostScheduling()` when `ENABLE_SESSION_BOOST=true`.
-- Independent environment variable configuration (`SESSION_BOOST_*` prefix).
-
-Session boost logic has been entirely removed from the fairness queue (`FAIRNESS_SESSION_BOOST_ENABLED` is no longer supported). Users should migrate to the standalone `ENABLE_SESSION_BOOST=true` configuration.

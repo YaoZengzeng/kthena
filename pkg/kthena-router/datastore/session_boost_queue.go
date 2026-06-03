@@ -106,10 +106,8 @@ func (h *sessionBoostHeap) Pop() interface{} {
 	return item
 }
 
-// SessionBoostQueue is a standalone queue that implements session-aware priority boosting
-// for multi-turn conversations, independent of the fairness scheduling queue.
-// It can be used on its own to leverage prefix cache benefits without requiring
-// fairness queue to be enabled.
+// SessionBoostQueue implements session-aware priority boosting for multi-turn
+// conversations to maximize prefix cache hit rate on LLM inference backends.
 type SessionBoostQueue struct {
 	stopCh   chan struct{}
 	notifyCh chan struct{}
@@ -167,7 +165,7 @@ func (q *SessionBoostQueue) PushRequest(r *Request) error {
 
 	// Update metrics
 	if q.metrics != nil {
-		q.metrics.IncFairnessQueueSize(r.ModelName, r.UserID)
+		q.metrics.IncSessionBoostQueueSize(r.ModelName)
 	}
 
 	if r.SessionBoost {
@@ -193,10 +191,10 @@ func (q *SessionBoostQueue) popWhenAvailable(ctx context.Context) (*Request, err
 			// Skip cancelled requests
 			if req.isCancelled() {
 				if q.metrics != nil {
-					q.metrics.DecFairnessQueueSize(req.ModelName, req.UserID)
+					q.metrics.DecSessionBoostQueueSize(req.ModelName)
 					queueDuration := time.Since(req.RequestTime)
-					q.metrics.RecordFairnessQueueDuration(req.ModelName, req.UserID, queueDuration)
-					q.metrics.IncFairnessQueueCancelled(req.ModelName, req.UserID)
+					q.metrics.RecordSessionBoostQueueDuration(req.ModelName, queueDuration)
+					q.metrics.IncSessionBoostQueueCancelled(req.ModelName)
 				}
 				q.mu.Unlock()
 				continue
@@ -204,9 +202,9 @@ func (q *SessionBoostQueue) popWhenAvailable(ctx context.Context) (*Request, err
 
 			queueDuration := time.Since(req.RequestTime)
 			if q.metrics != nil {
-				q.metrics.DecFairnessQueueSize(req.ModelName, req.UserID)
-				q.metrics.RecordFairnessQueueDuration(req.ModelName, req.UserID, queueDuration)
-				q.metrics.IncFairnessQueueDequeue(req.ModelName, req.UserID)
+				q.metrics.DecSessionBoostQueueSize(req.ModelName)
+				q.metrics.RecordSessionBoostQueueDuration(req.ModelName, queueDuration)
+				q.metrics.IncSessionBoostQueueDequeue(req.ModelName)
 			}
 			q.mu.Unlock()
 			return req, nil
@@ -263,12 +261,12 @@ func (q *SessionBoostQueue) runDirectMode(ctx context.Context) {
 				default:
 				}
 				if q.metrics != nil {
-					q.metrics.DecFairnessQueueInflight(req.ModelName)
+					q.metrics.DecSessionBoostQueueInflight(req.ModelName)
 				}
 			})
 		}
 		if q.metrics != nil {
-			q.metrics.IncFairnessQueueInflight(req.ModelName)
+			q.metrics.IncSessionBoostQueueInflight(req.ModelName)
 		}
 		close(req.NotifyChan)
 	}
@@ -427,12 +425,12 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 			default:
 			}
 			if q.metrics != nil {
-				q.metrics.DecFairnessQueueInflight(req.ModelName)
+				q.metrics.DecSessionBoostQueueInflight(req.ModelName)
 			}
 		})
 	}
 	if q.metrics != nil {
-		q.metrics.IncFairnessQueueInflight(req.ModelName)
+		q.metrics.IncSessionBoostQueueInflight(req.ModelName)
 	}
 
 	klog.V(4).Infof("[SessionBoostQueue] backpressure dequeue: reqID=%s user=%s model=%s sessionBoost=%v inflight=%d/%d",
@@ -457,7 +455,7 @@ func (q *SessionBoostQueue) Close() {
 	for q.heap.Len() > 0 {
 		req := heap.Pop(&q.heap).(*Request)
 		if q.metrics != nil {
-			q.metrics.DecFairnessQueueSize(req.ModelName, req.UserID)
+			q.metrics.DecSessionBoostQueueSize(req.ModelName)
 		}
 	}
 	klog.V(4).Info("[SessionBoostQueue] queue closed and drained")
