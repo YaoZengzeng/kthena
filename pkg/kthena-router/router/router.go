@@ -71,6 +71,7 @@ func getEnvBool(key string, fallback bool) bool {
 }
 
 var EnableFairnessScheduling = getEnvBool("ENABLE_FAIRNESS_SCHEDULING", false)
+var EnableSessionBoost = getEnvBool("ENABLE_SESSION_BOOST", false)
 
 type Router struct {
 	scheduler       scheduler.Scheduler
@@ -311,12 +312,22 @@ func (r *Router) HandlerFunc() gin.HandlerFunc {
 		c.Set("metricsRecorder", metricsRecorder)
 
 		// step 3.1: load balancing
-		if !EnableFairnessScheduling {
+		if !EnableFairnessScheduling && !EnableSessionBoost {
 			r.doLoadbalance(c, modelRequest)
 			return
 		}
 
-		// step 3.2: load balancing for Fairness scheduling enabled case
+		// step 3.2: standalone session boost (without fairness scheduling)
+		if EnableSessionBoost && !EnableFairnessScheduling {
+			if err := r.handleSessionBoostScheduling(c, modelRequest, requestID, modelName); err != nil {
+				accesslog.SetError(c, "scheduling", err.Error())
+				c.Set("finishReason", "scheduling")
+				return
+			}
+			return
+		}
+
+		// step 3.3: load balancing for Fairness scheduling enabled case
 		if err := r.handleFairnessScheduling(c, modelRequest, requestID, modelName); err != nil {
 			accesslog.SetError(c, "scheduling", err.Error())
 			c.Set("finishReason", "scheduling")
@@ -1147,29 +1158,27 @@ func (r *Router) proxyToPDDisaggregated(
 }
 
 // handleFairnessScheduling handles the fairness scheduling flow for requests.
-// It supports session-aware priority boosting for multi-turn conversations:
-// requests identified by X-Correlation-ID that follow a recently completed request
-// in the same session are boosted to the front of the queue to leverage prefix cache.
 func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequest, requestID string, modelName string) error {
 	// Extract session correlation ID from HTTP header for multi-turn conversation tracking.
-	// X-Correlation-ID identifies a conversation session; X-Request-ID identifies individual requests.
-	correlationID := c.Request.Header.Get("X-Correlation-ID")
+	sessionHeader := r.store.GetSessionIDHeader()
+	var correlationID string
+	if sessionHeader != "" {
+		correlationID = c.Request.Header.Get(sessionHeader)
+	}
 	// Use the request ID from header if available, otherwise fall back to the generated one
 	if headerReqID := c.Request.Header.Get("X-Request-ID"); headerReqID != "" {
 		requestID = headerReqID
 	}
 
-	// userId is optional when session boost is available (correlationID present).
-	// When missing, priority defaults to 0 and session boost handles ordering.
 	var userId string
 	if userIdVal, ok := c.Get(common.UserIdKey); ok {
 		if s, ok := userIdVal.(string); ok {
 			userId = s
 		}
 	}
-	if userId == "" && correlationID == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, "missing userId in request body and no X-Correlation-ID header")
-		return fmt.Errorf("missing userId in request body and no X-Correlation-ID header")
+	if userId == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, "missing userId in request body")
+		return fmt.Errorf("missing userId in request body")
 	}
 
 	klog.V(4).Infof("[FairnessScheduling] incoming request: reqID=%s user=%s model=%s",
@@ -1230,5 +1239,84 @@ func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequ
 			requestID, correlationID, userId, modelName)
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, "Client disconnected while waiting in fairness queue")
 		return fmt.Errorf("client disconnected while waiting in fairness queue")
+	}
+}
+
+// handleSessionBoostScheduling handles the session boost queue scheduling flow.
+// This works independently of fairness scheduling, using only session correlation
+// to boost multi-turn conversation requests for prefix cache utilization.
+func (r *Router) handleSessionBoostScheduling(c *gin.Context, modelRequest ModelRequest, requestID string, modelName string) error {
+	sessionHeader := r.store.GetSessionIDHeader()
+	if sessionHeader == "" {
+		sessionHeader = "X-Correlation-ID"
+	}
+	correlationID := c.Request.Header.Get(sessionHeader)
+	if headerReqID := c.Request.Header.Get("X-Request-ID"); headerReqID != "" {
+		requestID = headerReqID
+	}
+
+	var userId string
+	if userIdVal, ok := c.Get(common.UserIdKey); ok {
+		if s, ok := userIdVal.(string); ok {
+			userId = s
+		}
+	}
+
+	klog.V(4).Infof("[SessionBoost] incoming request: reqID=%s user=%s model=%s correlationID=%s",
+		requestID, userId, modelName, correlationID)
+
+	reqCtx, cancel := context.WithTimeout(c.Request.Context(), r.fairnessTimeout)
+	defer cancel()
+
+	queueReq := &datastore.Request{
+		ReqID:         requestID,
+		UserID:        userId,
+		ModelName:     modelName,
+		CorrelationID: correlationID,
+		RequestTime:   time.Now(),
+		NotifyChan:    make(chan struct{}),
+		CancelCh:      reqCtx.Done(),
+	}
+
+	enqueued, err := r.store.EnqueueSessionBoost(queueReq)
+	if err != nil {
+		klog.Errorf("[SessionBoost] failed to enqueue: reqID=%s correlationID=%s model=%s err=%v",
+			requestID, correlationID, modelName, err)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, fmt.Sprintf("failed to enqueue request: %v", err))
+		return fmt.Errorf("failed to enqueue request: %v", err)
+	}
+	if !enqueued {
+		// Session boost queue not enabled, fall through to direct load balance
+		r.doLoadbalance(c, modelRequest)
+		return nil
+	}
+
+	select {
+	case <-queueReq.NotifyChan:
+		if queueReq.Release != nil {
+			defer queueReq.Release()
+		}
+		klog.V(4).Infof("[SessionBoost] request dequeued: reqID=%s user=%s model=%s sessionBoost=%v waitTime=%v",
+			requestID, userId, modelName, queueReq.SessionBoost, time.Since(queueReq.RequestTime))
+		r.doLoadbalance(c, modelRequest)
+
+		if correlationID != "" {
+			r.store.MarkSessionCompleted(modelName, correlationID)
+		}
+		return nil
+	case <-reqCtx.Done():
+		if queueReq.Release != nil {
+			queueReq.Release()
+		}
+		if errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
+			klog.Errorf("[SessionBoost] request timed out in queue: reqID=%s correlationID=%s model=%s timeout=%v",
+				requestID, correlationID, modelName, r.fairnessTimeout)
+			c.AbortWithStatusJSON(http.StatusGatewayTimeout, "Request processing timed out")
+			return fmt.Errorf("request processing timed out in session boost queue")
+		}
+		klog.V(4).Infof("[SessionBoost] request cancelled (client disconnected): reqID=%s correlationID=%s model=%s",
+			requestID, correlationID, modelName)
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, "Client disconnected while waiting in session boost queue")
+		return fmt.Errorf("client disconnected while waiting in session boost queue")
 	}
 }

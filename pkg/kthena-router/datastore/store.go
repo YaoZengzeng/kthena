@@ -242,6 +242,14 @@ type Store interface {
 	// has completed, enabling priority boosting for follow-up requests in the same session.
 	MarkSessionCompleted(modelName, correlationID string)
 
+	// EnqueueSessionBoost adds a request to the standalone session boost queue.
+	// Returns false if the session boost queue is not enabled.
+	EnqueueSessionBoost(req *Request) (bool, error)
+
+	// GetSessionIDHeader returns the configured HTTP header name used to identify
+	// conversation sessions. Returns empty string if session boost is not enabled.
+	GetSessionIDHeader() string
+
 	// GetRequestWaitingQueueStats returns per-model queue lengths
 	GetRequestWaitingQueueStats() []QueueStat
 
@@ -373,6 +381,10 @@ type store struct {
 	rootCtx               context.Context // Lifecycle context for queue goroutines, set by Run()
 	fairnessQueueConfig   FairnessQueueConfig
 	metricsScrapeInterval time.Duration
+
+	// model -> SessionBoostQueue (standalone session boost, independent of fairness queue)
+	sessionBoostQueue       sync.Map
+	sessionBoostQueueConfig *SessionBoostQueueConfig // nil means disabled
 }
 
 func New(opts ...Option) Store {
@@ -391,10 +403,11 @@ func New(opts ...Option) Store {
 		initialSynced:       &atomic.Bool{},
 		requestWaitingQueue: sync.Map{},
 		// Create token tracker with environment-based configuration
-		tokenTracker:          createTokenTracker(),
-		podRuntimeInspector:   realPodRuntimeInspector{},
-		fairnessQueueConfig:   createFairnessQueueConfig(),
-		metricsScrapeInterval: parseMetricsScrapeInterval(),
+		tokenTracker:            createTokenTracker(),
+		podRuntimeInspector:     realPodRuntimeInspector{},
+		fairnessQueueConfig:     createFairnessQueueConfig(),
+		metricsScrapeInterval:   parseMetricsScrapeInterval(),
+		sessionBoostQueueConfig: createSessionBoostQueueConfigFromEnv(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -463,31 +476,6 @@ func createFairnessQueueConfig() FairnessQueueConfig {
 		}
 	}
 
-	// Session boost configuration for multi-turn conversation prefix cache optimization
-	if v := os.Getenv("FAIRNESS_SESSION_BOOST_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.SessionBoostEnabled = b
-		} else {
-			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_ENABLED: %q, using default %v", v, cfg.SessionBoostEnabled)
-		}
-	}
-
-	if v := os.Getenv("FAIRNESS_SESSION_BOOST_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			cfg.SessionBoostTTL = d
-		} else {
-			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_TTL: %q, using default %v", v, cfg.SessionBoostTTL)
-		}
-	}
-
-	if v := os.Getenv("FAIRNESS_SESSION_BOOST_GRACE_PERIOD"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			cfg.SessionBoostGracePeriod = d
-		} else {
-			klog.Warningf("Invalid FAIRNESS_SESSION_BOOST_GRACE_PERIOD: %q, using default %v", v, cfg.SessionBoostGracePeriod)
-		}
-	}
-
 	if v := os.Getenv("FAIRNESS_INFLIGHT_PER_POD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.InflightPerPod = n
@@ -497,6 +485,59 @@ func createFairnessQueueConfig() FairnessQueueConfig {
 	}
 
 	return cfg
+}
+
+// createSessionBoostQueueConfigFromEnv returns a SessionBoostQueueConfig if
+// SESSION_BOOST_ENABLED=true, or nil if the standalone session boost queue is disabled.
+func createSessionBoostQueueConfigFromEnv() *SessionBoostQueueConfig {
+	v := os.Getenv("SESSION_BOOST_ENABLED")
+	if v == "" {
+		return nil
+	}
+	enabled, err := strconv.ParseBool(v)
+	if err != nil || !enabled {
+		return nil
+	}
+
+	cfg := DefaultSessionBoostQueueConfig()
+
+	if v := os.Getenv("SESSION_BOOST_HEADER"); v != "" {
+		cfg.SessionIDHeader = v
+	}
+
+	if v := os.Getenv("SESSION_BOOST_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.SessionBoostTTL = d
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_TTL: %q, using default %v", v, cfg.SessionBoostTTL)
+		}
+	}
+
+	if v := os.Getenv("SESSION_BOOST_GRACE_PERIOD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			cfg.SessionBoostGracePeriod = d
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_GRACE_PERIOD: %q, using default %v", v, cfg.SessionBoostGracePeriod)
+		}
+	}
+
+	if v := os.Getenv("SESSION_BOOST_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.BackpressurePollInterval = d
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_POLL_INTERVAL: %q, using default %v", v, cfg.BackpressurePollInterval)
+		}
+	}
+
+	if v := os.Getenv("SESSION_BOOST_INFLIGHT_PER_POD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.InflightPerPod = n
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_INFLIGHT_PER_POD: %q, using default %d", v, cfg.InflightPerPod)
+		}
+	}
+
+	return &cfg
 }
 
 func isValidFairnessWeight(value float64) bool {
@@ -677,14 +718,58 @@ func (s *store) MarkSessionCompleted(modelName, correlationID string) {
 	if correlationID == "" {
 		return
 	}
-	val, ok := s.requestWaitingQueue.Load(modelName)
-	if !ok {
-		return
+	// Mark on the standalone session boost queue
+	if sbVal, ok := s.sessionBoostQueue.Load(modelName); ok {
+		sbQueue, _ := sbVal.(*SessionBoostQueue)
+		if sbQueue != nil {
+			sbQueue.MarkSessionCompleted(correlationID)
+		}
 	}
-	queue, _ := val.(*RequestPriorityQueue)
-	if queue != nil {
-		queue.MarkSessionCompleted(correlationID)
+}
+
+// GetSessionIDHeader returns the configured HTTP header name used to identify
+// conversation sessions. Returns empty string if session boost is not enabled.
+func (s *store) GetSessionIDHeader() string {
+	if s.sessionBoostQueueConfig == nil {
+		return ""
 	}
+	return s.sessionBoostQueueConfig.SessionIDHeader
+}
+
+// EnqueueSessionBoost adds a request to the standalone session boost queue.
+// Returns (true, nil) if the request was enqueued, (false, nil) if session boost is not enabled.
+func (s *store) EnqueueSessionBoost(req *Request) (bool, error) {
+	if s.sessionBoostQueueConfig == nil {
+		return false, nil
+	}
+
+	modelName := req.ModelName
+	var queue *SessionBoostQueue
+	val, ok := s.sessionBoostQueue.Load(modelName)
+	if ok {
+		queue, _ = val.(*SessionBoostQueue)
+	} else {
+		checker := s.makeBackendWaitingChecker()
+		newQueue := NewSessionBoostQueue(nil, *s.sessionBoostQueueConfig, checker)
+		newQueue.SetPodCounter(s.makePodCounter())
+		val, ok = s.sessionBoostQueue.LoadOrStore(modelName, newQueue)
+		if !ok {
+			queueCtx := s.rootCtx
+			if queueCtx == nil {
+				klog.Warning("store.EnqueueSessionBoost called before Run(); using background context for queue")
+				queueCtx = context.Background()
+			}
+			go newQueue.Run(queueCtx)
+		}
+		queue, _ = val.(*SessionBoostQueue)
+	}
+
+	err := queue.PushRequest(req)
+	if err != nil {
+		klog.Errorf("failed to push request to session boost queue: %v", err)
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *store) GetRequestWaitingQueueStats() []QueueStat {

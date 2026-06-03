@@ -61,28 +61,10 @@ type FairnessQueueConfig struct {
 	// RequestNumWeight is the request-count weight in the composite priority score.
 	RequestNumWeight float64
 
-	// SessionBoostEnabled enables session-aware priority boosting for multi-turn conversations.
-	// When enabled, requests from sessions that recently completed a request will be boosted
-	// to the front of the queue to leverage prefix cache.
-	SessionBoostEnabled bool
-
-	// SessionBoostTTL is the duration after which a session boost expires.
-	// Requests from the same session (identified by X-Correlation-ID) that arrive
-	// within this window after the previous request completed will be boosted.
-	SessionBoostTTL time.Duration
-
 	// InflightPerPod is the maximum number of inflight requests allowed per backend pod
 	// in backpressure mode. The total inflight limit is InflightPerPod * podCount.
 	// Defaults to 1.
 	InflightPerPod int
-
-	// SessionBoostGracePeriod is the duration to wait after a release before dequeuing
-	// the next request in backpressure mode when session boost is enabled.
-	// This gives the same session time to submit a follow-up request that benefits
-	// from prefix cache, rather than immediately dispatching an unrelated request.
-	// If a session-boosted request arrives during this window, it is dequeued immediately.
-	// Defaults to 50ms. Set to 0 to disable the grace period.
-	SessionBoostGracePeriod time.Duration
 }
 
 // DefaultFairnessQueueConfig returns backward-compatible defaults.
@@ -94,11 +76,8 @@ func DefaultFairnessQueueConfig() FairnessQueueConfig {
 		RebuildThreshold:          64,
 		TokenWeight:               1.0,
 		RequestNumWeight:          0.0,
-		SessionBoostEnabled:       false,
-		SessionBoostTTL:           60 * time.Second,
 		BackpressurePollInterval:  100 * time.Millisecond,
 		InflightPerPod:            1,
-		SessionBoostGracePeriod:   50 * time.Millisecond,
 	}
 }
 
@@ -220,9 +199,6 @@ type RequestPriorityQueue struct {
 	// Priority refresh (Phase 2)
 	tokenTracker TokenTracker // Optional; when set, enables dequeue-time priority refresh
 
-	// Session-aware priority boosting for multi-turn conversations
-	sessionTracker *SessionTracker
-
 	// backendChecker checks if backend pods have capacity (waiting queue empty).
 	// Used in backpressure mode to gate dequeue on backend readiness.
 	backendChecker BackendWaitingChecker
@@ -263,9 +239,6 @@ func NewRequestPriorityQueueWithConfig(metricsInstance *metrics.Metrics, cfg Fai
 	if cfg.MaxConcurrent > 0 {
 		pq.sem = make(chan struct{}, cfg.MaxConcurrent)
 	}
-	if cfg.SessionBoostEnabled {
-		pq.sessionTracker = NewSessionTracker(cfg.SessionBoostTTL)
-	}
 	if len(checker) > 0 && checker[0] != nil {
 		pq.backendChecker = checker[0]
 	}
@@ -276,17 +249,11 @@ func NewRequestPriorityQueueWithConfig(metricsInstance *metrics.Metrics, cfg Fai
 func (pq *RequestPriorityQueue) Len() int { return len(pq.heap) }
 
 func (pq *RequestPriorityQueue) Less(i, j int) bool {
-	// Session-boosted requests always take priority over non-boosted ones.
-	// This ensures multi-turn conversation follow-up requests are processed first
-	// to maximize prefix cache hit rate.
-	if pq.heap[i].SessionBoost != pq.heap[j].SessionBoost {
-		return pq.heap[i].SessionBoost
-	}
-	// Among boosted requests (or among non-boosted), use FIFO for same user
+	// FIFO for same user
 	if pq.heap[i].UserID == pq.heap[j].UserID {
 		return pq.heap[i].RequestTime.Before(pq.heap[j].RequestTime)
 	}
-	// different users, compare priority, actually token usage here
+	// different users, compare priority (token usage based)
 	if pq.heap[i].Priority != pq.heap[j].Priority {
 		return pq.heap[i].Priority < pq.heap[j].Priority
 	}
@@ -316,28 +283,12 @@ func (pq *RequestPriorityQueue) Pop() interface{} {
 
 func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 	pq.mu.Lock()
-
-	// Check session boost: if this request's correlation ID has a recent completion,
-	// mark it as boosted so it gets priority in the queue.
-	if pq.sessionTracker != nil && r.CorrelationID != "" {
-		if pq.sessionTracker.HasRecentCompletion(r.CorrelationID) {
-			r.SessionBoost = true
-		}
-	}
-
 	heap.Push(pq, r)
-	queueLen := len(pq.heap)
 	pq.mu.Unlock()
 
 	// Update fairness queue size metrics
 	if pq.metrics != nil {
 		pq.metrics.IncFairnessQueueSize(r.ModelName, r.UserID)
-	}
-
-	// Log only when session boost promotes a request to the head
-	if r.SessionBoost {
-		klog.V(4).Infof("[FairnessQueue] session boost: reqID=%s correlationID=%s promoted to head, queueLen=%d",
-			r.ReqID, r.CorrelationID, queueLen)
 	}
 
 	// Signal that a new item is available
@@ -487,12 +438,7 @@ func (pq *RequestPriorityQueue) requeueRequest(req *Request) {
 // gated by available capacity. In backpressure mode (backendChecker != nil), dequeue
 // is gated by backend pod waiting queue emptiness. Otherwise, falls back to QPS-based
 // ticker dequeue.
-// Also starts a periodic session tracker cleanup goroutine if session boost is enabled.
 func (pq *RequestPriorityQueue) Run(ctx context.Context, qps int) {
-	// Start session tracker cleanup goroutine if enabled
-	if pq.sessionTracker != nil {
-		go pq.runSessionCleanup(ctx)
-	}
 	if pq.sem != nil {
 		pq.runSemaphoreMode(ctx)
 		return
@@ -504,26 +450,6 @@ func (pq *RequestPriorityQueue) Run(ctx context.Context, qps int) {
 	pq.runQPSMode(ctx, qps)
 }
 
-// runSessionCleanup periodically cleans up expired sessions from the session tracker.
-func (pq *RequestPriorityQueue) runSessionCleanup(ctx context.Context) {
-	cleanupInterval := pq.config.SessionBoostTTL
-	if cleanupInterval < 10*time.Second {
-		cleanupInterval = 10 * time.Second
-	}
-	ticker := time.NewTicker(cleanupInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-pq.stopCh:
-			return
-		case <-ticker.C:
-			pq.sessionTracker.Cleanup()
-		}
-	}
-}
-
 // runBackpressureMode dequeues requests only when backend pods have capacity.
 // It uses two-level admission control:
 //  1. Inflight limit: at most one inflight request per backend pod (prevents flooding
@@ -532,18 +458,13 @@ func (pq *RequestPriorityQueue) runSessionCleanup(ctx context.Context) {
 //
 // When an inflight request completes (Release is called), the queue immediately
 // attempts to dequeue the next request without waiting for the next tick.
-//
-// Session Grace Period: When session boost is enabled and SessionBoostGracePeriod > 0,
-// a release event triggers a short wait before dequeuing. This gives the same session
-// time to submit a follow-up request that can leverage prefix cache. If a session-boosted
-// request arrives during the grace period, it is dequeued immediately without waiting.
 func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 	pollInterval := pq.config.BackpressurePollInterval
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
 	}
-	klog.V(4).Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v, sessionBoostEnabled=%v, gracePeriod=%v",
-		pollInterval, pq.config.SessionBoostEnabled, pq.config.SessionBoostGracePeriod)
+	klog.V(4).Infof("[FairnessQueue] starting backpressure dequeue loop, poll_interval=%v",
+		pollInterval)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
@@ -553,64 +474,9 @@ func (pq *RequestPriorityQueue) runBackpressureMode(ctx context.Context) {
 		case <-pq.stopCh:
 			return
 		case <-pq.releaseCh:
-			// A previous inflight request completed.
-			// If session boost grace period is enabled, wait briefly for a
-			// same-session follow-up request to arrive (higher prefix cache hit).
-			if pq.config.SessionBoostEnabled && pq.config.SessionBoostGracePeriod > 0 {
-				pq.waitGraceAndDequeue(ctx)
-			} else {
-				pq.tryBackpressureDequeue(ctx)
-			}
+			pq.tryBackpressureDequeue(ctx)
 		case <-ticker.C:
 			pq.tryBackpressureDequeue(ctx)
-		}
-	}
-}
-
-// isHeadSessionBoosted checks if the highest-priority request in the queue has a session boost.
-func (pq *RequestPriorityQueue) isHeadSessionBoosted() bool {
-	pq.mu.RLock()
-	defer pq.mu.RUnlock()
-	if len(pq.heap) == 0 {
-		return false
-	}
-	return pq.heap[0].SessionBoost
-}
-
-// waitGraceAndDequeue waits up to SessionBoostGracePeriod for a session-boosted
-// request to arrive at the head of the queue. If one arrives, it dequeues immediately.
-// If the grace period expires without a session-boosted arrival, it dequeues normally.
-// If the queue head is already session-boosted, skips the wait entirely.
-func (pq *RequestPriorityQueue) waitGraceAndDequeue(ctx context.Context) {
-	// Fast path: head is already session-boosted, no need to wait.
-	if pq.isHeadSessionBoosted() {
-		klog.V(4).Info("[FairnessQueue] grace: head already boosted, skipping wait")
-		pq.tryBackpressureDequeue(ctx)
-		return
-	}
-
-	klog.V(4).Infof("[FairnessQueue] grace: starting grace period %v", pq.config.SessionBoostGracePeriod)
-	timer := time.NewTimer(pq.config.SessionBoostGracePeriod)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-pq.stopCh:
-			return
-		case <-pq.notifyCh:
-			// A new request was pushed; check if the head is now session-boosted.
-			if pq.isHeadSessionBoosted() {
-				klog.V(4).Info("[FairnessQueue] grace period: session-boosted request arrived, dequeuing immediately")
-				pq.tryBackpressureDequeue(ctx)
-				return
-			}
-			// Not session-boosted; continue waiting for grace period to expire.
-		case <-timer.C:
-			// Grace period expired; dequeue whatever is at the head.
-			pq.tryBackpressureDequeue(ctx)
-			return
 		}
 	}
 }
@@ -784,19 +650,6 @@ func (pq *RequestPriorityQueue) Close() {
 		}
 	}
 	klog.V(4).Info("[FairnessQueue] queue closed and drained")
-}
-
-// MarkSessionCompleted records that a request from the given session has completed.
-// This enables priority boosting for subsequent requests from the same session.
-func (pq *RequestPriorityQueue) MarkSessionCompleted(correlationID string) {
-	if pq.sessionTracker != nil {
-		pq.sessionTracker.MarkCompleted(correlationID)
-	}
-}
-
-// GetSessionTracker returns the session tracker, or nil if session boost is not enabled.
-func (pq *RequestPriorityQueue) GetSessionTracker() *SessionTracker {
-	return pq.sessionTracker
 }
 
 // SetPodCounter sets the function used to determine the number of ready backend pods.
