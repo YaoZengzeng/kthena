@@ -35,17 +35,17 @@
 
 All values are **averages across 3 runs**. Lower is better for latency metrics; higher is better for throughput metrics.
 
-| Configuration                             | TTFT (ms) | Request Latency (ms) | ITL (ms) | Output Throughput (tok/s) | Request Throughput (req/s) | Per-User Throughput (tok/s/user) | Latency Std Dev (ms) |
-| ----------------------------------------- | --------- | -------------------- | -------- | ------------------------- | -------------------------- | -------------------------------- | -------------------- |
-| **Kthena 2\*LR + PC**                     | 4,517.07  | 14,951.23            | 70.03    | 387.37                    | 2.58                       | 17.61                            | 8,476.79             |
-| **Kthena 3\*PC + 2\*LR + 2\*GPU**         | 3,970.48  | 13,303.99            | 62.65    | 417.04                    | 2.78                       | 20.21                            | 9,211.07             |
-| **Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT** | 4,078.79  | 14,547.27            | 70.27    | 393.03                    | 2.62                       | 17.23                            | 8,072.47             |
-| **Kthena 3\*KV + 2\*LR + 2\*GPU**         | 3,824.83  | 13,454.16            | 64.63    | 408.22                    | 2.72                       | 19.89                            | 8,845.42             |
-| **Kthena OQ + PC + 2\*LR**                | 2,931.46  | 9,912.13             | 46.87    | 454.04                    | 3.03                       | 25.44                            | 8,223.05             |
-| **Kthena OQ + GW + SA + 2\*LR** ⭐         | 2,714.66  | 9,281.22             | 44.08    | 494.60                    | 3.30                       | 26.85                            | 9,862.98             |
-| **Kthena OQ + GW + PC + 2\*LR** ⭐⭐        | 2,834.42  | 9,310.85             | 43.47    | 501.37                    | 3.34                       | 26.99                            | 10,256.66            |
-| **llm-d Prefix Cache**                    | 3,596.66  | 13,534.92            | 66.70    | 409.28                    | 2.73                       | 18.63                            | 8,300.27             |
-| **llm-d KVCache Aware**                   | 3,717.75  | 13,847.30            | 67.99    | 400.35                    | 2.67                       | 18.22                            | 7,845.01             |
+| Configuration                             | TTFT (ms) | Request Latency (ms) | ITL (ms) | Output Throughput (tok/s) | Request Throughput (req/s) | Output Tok Throughput Per User (tok/s/user) | Latency Std Dev (ms) |
+| ----------------------------------------- | --------- | -------------------- | -------- | ------------------------- | -------------------------- | ------------------------------------------- | -------------------- |
+| **Kthena 2\*LR + PC**                     | 4,517.07  | 14,951.23            | 70.03    | 387.37                    | 2.58                       | 17.61                                       | 8,476.79             |
+| **Kthena 3\*PC + 2\*LR + 2\*GPU**         | 3,970.48  | 13,303.99            | 62.65    | 417.04                    | 2.78                       | 20.21                                       | 9,211.07             |
+| **Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT** | 4,078.79  | 14,547.27            | 70.27    | 393.03                    | 2.62                       | 17.23                                       | 8,072.47             |
+| **Kthena 3\*KV + 2\*LR + 2\*GPU**         | 3,824.83  | 13,454.16            | 64.63    | 408.22                    | 2.72                       | 19.89                                       | 8,845.42             |
+| **Kthena OQ + PC + 2\*LR**                | 2,931.46  | 9,912.13             | 46.87    | 454.04                    | 3.03                       | 25.44                                       | 8,223.05             |
+| **Kthena OQ + GW + SA + 2\*LR** ⭐         | 2,714.66  | 9,281.22             | 44.08    | 494.60                    | 3.30                       | 26.85                                       | 9,862.98             |
+| **Kthena OQ + GW + PC + 2\*LR** ⭐⭐        | 2,834.42  | 9,310.85             | 43.47    | 501.37                    | 3.34                       | 26.99                                       | 10,256.66            |
+| **llm-d Prefix Cache**                    | 3,596.66  | 13,534.92            | 66.70    | 409.28                    | 2.73                       | 18.63                                       | 8,300.27             |
+| **llm-d KVCache Aware**                   | 3,717.75  | 13,847.30            | 67.99    | 400.35                    | 2.67                       | 18.22                                       | 7,845.01             |
 
 > **Note**: OQ configurations completed fewer requests per run due to optimized queue scheduling dropping a small number of requests under extreme load: OQ+PC+2\*LR ~1,159/run, OQ+GW+SA+2\*LR ~1,169/run, OQ+GW+PC+2\*LR ~1,172/run.
 
@@ -93,13 +93,13 @@ xychart-beta
     bar [70.03, 62.65, 70.27, 64.63, 46.87, 44.08, 43.47, 66.70, 67.99]
 ```
 
-### 3.5 Per-User Throughput (tok/s/user) — Higher is Better
+### 3.5 Output Tok Throughput Per User (tok/s/user) — Higher is Better
 
 ```mermaid
 xychart-beta
-    title "Per-User Throughput (tok/s/user) — Concurrency 40"
+    title "Output Tok Throughput Per User (tok/s/user) — Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "OQ+PC+2*LR", "OQ+GW+SA+2*LR", "OQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "Per-User (tok/s/user)" 15 --> 28
+    y-axis "Output Tok/User (tok/s/user)" 15 --> 28
     bar [17.61, 20.21, 17.23, 19.89, 25.44, 26.85, 26.99, 18.63, 18.22]
 ```
 
@@ -121,73 +121,73 @@ xychart-beta
 
 For latency metrics: negative = lower (better). For throughput metrics: positive = higher (better).
 
-| Configuration                       | Output Throughput | Request Throughput | Request Latency | ITL          | Per-User Throughput | TTFT         |
-| ----------------------------------- | ----------------- | ------------------ | --------------- | ------------ | ------------------- | ------------ |
-| **Kthena 2\*LR+PC**                 | -5.4% ❌           | -5.5% ❌            | +10.5% ❌        | +5.0% ❌      | -5.5% ❌             | +25.6% ❌     |
-| **Kthena 3\*PC+2\*LR+2\*GPU**       | +1.9% ✅           | +1.8% ✅            | -1.7% ✅         | -6.1% ✅      | +8.5% ✅             | +10.4% ❌     |
-| **Kthena 3\*PC+2\*LR+2\*GPU+2\*LT** | -4.0% ❌           | -4.0% ❌            | +7.5% ❌         | +5.4% ❌      | -7.5% ❌             | +13.4% ❌     |
-| **Kthena 3\*KV+2\*LR+2\*GPU**       | -0.3% ≈           | -0.4% ≈            | -0.6% ≈         | -3.1% ✅      | +6.8% ✅             | +6.3% ❌      |
-| **Kthena OQ+PC+2\*LR**              | +10.9% ✅          | +11.0% ✅           | -26.8% ✅        | -29.7% ✅     | +36.6% ✅            | -18.5% ✅     |
-| **Kthena OQ+GW+SA+2\*LR**           | **+20.8%** ✅      | **+20.9%** ✅       | **-31.4%** ✅    | **-33.9%** ✅ | **+44.1%** ✅        | **-24.5%** ✅ |
-| **Kthena OQ+GW+PC+2\*LR**           | **+22.5%** ✅      | **+22.3%** ✅       | **-31.2%** ✅    | **-34.8%** ✅ | **+44.9%** ✅        | **-21.2%** ✅ |
+| Configuration                       | Request Throughput | TTFT         | ITL          | Request Latency | Output Throughput | Output Tok/User |
+| ----------------------------------- | ------------------ | ------------ | ------------ | --------------- | ----------------- | --------------- |
+| **Kthena 2\*LR+PC**                 | -5.5% ❌            | +25.6% ❌     | +5.0% ❌      | +10.5% ❌        | -5.4% ❌           | -5.5% ❌         |
+| **Kthena 3\*PC+2\*LR+2\*GPU**       | +1.8% ✅            | +10.4% ❌     | -6.1% ✅      | -1.7% ✅         | +1.9% ✅           | +8.5% ✅         |
+| **Kthena 3\*PC+2\*LR+2\*GPU+2\*LT** | -4.0% ❌            | +13.4% ❌     | +5.4% ❌      | +7.5% ❌         | -4.0% ❌           | -7.5% ❌         |
+| **Kthena 3\*KV+2\*LR+2\*GPU**       | -0.4% ≈            | +6.3% ❌      | -3.1% ✅      | -0.6% ≈         | -0.3% ≈           | +6.8% ✅         |
+| **Kthena OQ+PC+2\*LR**              | +11.0% ✅           | -18.5% ✅     | -29.7% ✅     | -26.8% ✅        | +10.9% ✅          | +36.6% ✅        |
+| **Kthena OQ+GW+SA+2\*LR**           | **+20.9%** ✅       | **-24.5%** ✅ | **-33.9%** ✅ | **-31.4%** ✅    | **+20.8%** ✅      | **+44.1%** ✅    |
+| **Kthena OQ+GW+PC+2\*LR**           | **+22.3%** ✅       | **-21.2%** ✅ | **-34.8%** ✅ | **-31.2%** ✅    | **+22.5%** ✅      | **+44.9%** ✅    |
 
 ### 4.2 Best Configuration Summary (OQ + GW + PC + 2\*LR vs llm-d Prefix Cache)
 
 ```mermaid
 xychart-beta
     title "Kthena OQ+GW+PC+2*LR — Improvement vs llm-d Prefix Cache"
-    x-axis ["Throughput +22.5%", "Req/s +22.3%", "Latency -31.2%", "ITL -34.8%", "Per-User +44.9%", "TTFT -21.2%"]
+    x-axis ["Throughput +22.5%", "Req/s +22.3%", "Latency -31.2%", "ITL -34.8%", "Output Tok/User +44.9%", "TTFT -21.2%"]
     y-axis "Improvement (%)" 0 --> 48
     bar [22.5, 22.3, 31.2, 34.8, 44.9, 21.2]
 ```
 
 ### 4.3 Each Kthena Configuration vs llm-d KVCache Aware
 
-| Configuration                       | Output Throughput | Request Throughput | Request Latency | ITL          | Per-User Throughput | TTFT         |
-| ----------------------------------- | ----------------- | ------------------ | --------------- | ------------ | ------------------- | ------------ |
-| **Kthena 2\*LR+PC**                 | -3.2% ❌           | -3.4% ❌            | +8.0% ❌         | +3.0% ❌      | -3.3% ❌             | +21.5% ❌     |
-| **Kthena 3\*PC+2\*LR+2\*GPU**       | +4.2% ✅           | +4.1% ✅            | -3.9% ✅         | -7.9% ✅      | +10.9% ✅            | +6.8% ❌      |
-| **Kthena 3\*PC+2\*LR+2\*GPU+2\*LT** | -1.8% ❌           | -1.9% ❌            | +5.1% ❌         | +3.4% ❌      | -5.4% ❌             | +9.7% ❌      |
-| **Kthena 3\*KV+2\*LR+2\*GPU**       | +2.0% ✅           | +1.9% ✅            | -2.8% ✅         | -4.9% ✅      | +9.2% ✅             | +2.9% ❌      |
-| **Kthena OQ+PC+2\*LR**              | +13.4% ✅          | +13.5% ✅           | -28.4% ✅        | -31.1% ✅     | +39.6% ✅            | -21.2% ✅     |
-| **Kthena OQ+GW+SA+2\*LR**           | **+23.5%** ✅      | **+23.6%** ✅       | **-33.0%** ✅    | **-35.2%** ✅ | **+47.4%** ✅        | **-27.0%** ✅ |
-| **Kthena OQ+GW+PC+2\*LR**           | **+25.2%** ✅      | **+25.1%** ✅       | **-32.8%** ✅    | **-36.1%** ✅ | **+48.1%** ✅        | **-23.8%** ✅ |
+| Configuration                       | Request Throughput | TTFT         | ITL          | Request Latency | Output Throughput | Output Tok/User |
+| ----------------------------------- | ------------------ | ------------ | ------------ | --------------- | ----------------- | --------------- |
+| **Kthena 2\*LR+PC**                 | -3.4% ❌            | +21.5% ❌     | +3.0% ❌      | +8.0% ❌         | -3.2% ❌           | -3.3% ❌         |
+| **Kthena 3\*PC+2\*LR+2\*GPU**       | +4.1% ✅            | +6.8% ❌      | -7.9% ✅      | -3.9% ✅         | +4.2% ✅           | +10.9% ✅        |
+| **Kthena 3\*PC+2\*LR+2\*GPU+2\*LT** | -1.9% ❌            | +9.7% ❌      | +3.4% ❌      | +5.1% ❌         | -1.8% ❌           | -5.4% ❌         |
+| **Kthena 3\*KV+2\*LR+2\*GPU**       | +1.9% ✅            | +2.9% ❌      | -4.9% ✅      | -2.8% ✅         | +2.0% ✅           | +9.2% ✅         |
+| **Kthena OQ+PC+2\*LR**              | +13.5% ✅           | -21.2% ✅     | -31.1% ✅     | -28.4% ✅        | +13.4% ✅          | +39.6% ✅        |
+| **Kthena OQ+GW+SA+2\*LR**           | **+23.6%** ✅       | **-27.0%** ✅ | **-35.2%** ✅ | **-33.0%** ✅    | **+23.5%** ✅      | **+47.4%** ✅    |
+| **Kthena OQ+GW+PC+2\*LR**           | **+25.1%** ✅       | **-23.8%** ✅ | **-36.1%** ✅ | **-32.8%** ✅    | **+25.2%** ✅      | **+48.1%** ✅    |
 
 ### 4.4 Best Configuration Summary (OQ + GW + PC + 2\*LR vs llm-d KVCache Aware)
 
 ```mermaid
 xychart-beta
     title "Kthena OQ+GW+PC+2*LR — Improvement vs llm-d KVCache Aware"
-    x-axis ["Throughput +25.2%", "Req/s +25.1%", "Latency -32.8%", "ITL -36.1%", "Per-User +48.1%", "TTFT -23.8%"]
+    x-axis ["Throughput +25.2%", "Req/s +25.1%", "Latency -32.8%", "ITL -36.1%", "Output Tok/User +48.1%", "TTFT -23.8%"]
     y-axis "Improvement (%)" 0 --> 50
     bar [25.2, 25.1, 32.8, 36.1, 48.1, 23.8]
 ```
 
 ### 4.5 Graceful Wait Configurations vs Previous Best (OQ + PC + 2\*LR)
 
-| Metric                  | OQ+GW+SA+2\*LR vs OQ+PC+2\*LR | OQ+GW+PC+2\*LR vs OQ+PC+2\*LR |
-| ----------------------- | ----------------------------- | ----------------------------- |
-| **Output Throughput**   | **+8.9%** ✅                   | **+10.4%** ✅                  |
-| **Request Throughput**  | **+8.9%** ✅                   | **+10.2%** ✅                  |
-| **Request Latency**     | **-6.4%** ✅                   | **-6.1%** ✅                   |
-| **ITL**                 | **-6.0%** ✅                   | **-7.3%** ✅                   |
-| **Per-User Throughput** | **+5.5%** ✅                   | **+6.1%** ✅                   |
-| **TTFT**                | **-7.4%** ✅                   | **-3.3%** ✅                   |
-| **Latency Std Dev**     | +19.9% ❌                      | +24.7% ❌                      |
+| Metric                 | OQ+GW+SA+2\*LR vs OQ+PC+2\*LR | OQ+GW+PC+2\*LR vs OQ+PC+2\*LR |
+| ---------------------- | ----------------------------- | ----------------------------- |
+| **Output Throughput**  | **+8.9%** ✅                   | **+10.4%** ✅                  |
+| **Request Throughput** | **+8.9%** ✅                   | **+10.2%** ✅                  |
+| **Request Latency**    | **-6.4%** ✅                   | **-6.1%** ✅                   |
+| **ITL**                | **-6.0%** ✅                   | **-7.3%** ✅                   |
+| **Output Tok/User**    | **+5.5%** ✅                   | **+6.1%** ✅                   |
+| **TTFT**               | **-7.4%** ✅                   | **-3.3%** ✅                   |
+| **Latency Std Dev**    | +19.9% ❌                      | +24.7% ❌                      |
 
 > **Key Insight**: The Graceful Wait mechanism provides substantial improvements over the base OQ configuration, with 9-10% higher throughput and 6-7% lower latency/ITL. The trade-off is higher latency variance due to the wait-time mechanism.
 
 ### 4.6 llm-d Prefix Cache vs llm-d KVCache Aware
 
-| Metric                  | llm-d PC vs llm-d KV |
-| ----------------------- | -------------------- |
-| **Output Throughput**   | +2.2% ✅              |
-| **Request Throughput**  | +2.2% ✅              |
-| **Request Latency**     | -2.3% ✅              |
-| **ITL**                 | -1.9% ✅              |
-| **Per-User Throughput** | +2.3% ✅              |
-| **TTFT**                | -3.3% ✅              |
-| **Latency Std Dev**     | +5.8% ❌              |
+| Metric                 | llm-d PC vs llm-d KV |
+| ---------------------- | -------------------- |
+| **Output Throughput**  | +2.2% ✅              |
+| **Request Throughput** | +2.2% ✅              |
+| **Request Latency**    | -2.3% ✅              |
+| **ITL**                | -1.9% ✅              |
+| **Output Tok/User**    | +2.3% ✅              |
+| **TTFT**               | -3.3% ✅              |
+| **Latency Std Dev**    | +5.8% ❌              |
 
 > **Observation**: llm-d's Prefix Cache strategy slightly outperforms its KVCache Aware strategy across throughput and latency metrics (2-3% improvement), though with marginally higher latency variance. This suggests Prefix Cache routing is modestly more effective than KVCache-aware routing for multi-turn conversation workloads at concurrency 40.
 
@@ -311,7 +311,7 @@ xychart-beta
 | ITL (ms)             | 70.02     | 69.76     | 70.31     | 70.03     |
 | Output Throughput    | 387.16    | 390.07    | 384.89    | 387.37    |
 | Request Throughput   | 2.58      | 2.60      | 2.57      | 2.58      |
-| Per-User Throughput  | 17.67     | 17.64     | 17.53     | 17.61     |
+| Output Tok/User      | 17.67     | 17.64     | 17.53     | 17.61     |
 | Latency Std Dev      | 8,434.73  | 8,435.67  | 8,559.98  | 8,476.79  |
 
 ### 8.2 Kthena 3\*PC + 2\*LR + 2\*GPU (3 runs)
@@ -323,7 +323,7 @@ xychart-beta
 | ITL (ms)             | 64.09     | 62.05     | 61.82     | 62.65     |
 | Output Throughput    | 407.35    | 421.06    | 422.72    | 417.04    |
 | Request Throughput   | 2.72      | 2.81      | 2.82      | 2.78      |
-| Per-User Throughput  | 20.26     | 20.11     | 20.26     | 20.21     |
+| Output Tok/User      | 20.26     | 20.11     | 20.26     | 20.21     |
 | Latency Std Dev      | 9,154.03  | 9,225.80  | 9,253.39  | 9,211.07  |
 
 ### 8.3 Kthena 3\*PC + 2\*LR + 2\*GPU + 2\*LT (3 runs)
@@ -335,7 +335,7 @@ xychart-beta
 | ITL (ms)             | 70.68     | 70.79     | 69.33     | 70.27     |
 | Output Throughput    | 404.49    | 386.38    | 388.21    | 393.03    |
 | Request Throughput   | 2.70      | 2.58      | 2.59      | 2.62      |
-| Per-User Throughput  | 16.80     | 17.21     | 17.69     | 17.23     |
+| Output Tok/User      | 16.80     | 17.21     | 17.69     | 17.23     |
 | Latency Std Dev      | 7,238.58  | 8,240.87  | 8,737.97  | 8,072.47  |
 
 ### 8.4 Kthena 3\*KV + 2\*LR + 2\*GPU (3 runs)
@@ -347,7 +347,7 @@ xychart-beta
 | ITL (ms)             | 64.18     | 65.29     | 64.42     | 64.63     |
 | Output Throughput    | 407.80    | 405.69    | 411.17    | 408.22    |
 | Request Throughput   | 2.72      | 2.70      | 2.74      | 2.72      |
-| Per-User Throughput  | 20.56     | 19.28     | 19.84     | 19.89     |
+| Output Tok/User      | 20.56     | 19.28     | 19.84     | 19.89     |
 | Latency Std Dev      | 8,969.17  | 8,627.99  | 8,939.09  | 8,845.42  |
 
 ### 8.5 Kthena OQ + PC + 2\*LR (3 runs)
@@ -359,7 +359,7 @@ xychart-beta
 | ITL (ms)             | 47.55    | 46.37    | 46.68     | 46.87    |
 | Output Throughput    | 446.62   | 458.40   | 457.11    | 454.04   |
 | Request Throughput   | 2.98     | 3.06     | 3.05      | 3.03     |
-| Per-User Throughput  | 25.20    | 25.80    | 25.31     | 25.44    |
+| Output Tok/User      | 25.20    | 25.80    | 25.31     | 25.44    |
 | Latency Std Dev      | 6,923.78 | 8,530.63 | 9,214.73  | 8,223.05 |
 | Request Count        | 1,152    | 1,159    | 1,166     | 1,159    |
 
@@ -372,7 +372,7 @@ xychart-beta
 | ITL (ms)             | 45.08    | 43.29     | 43.86    | 44.08    |
 | Output Throughput    | 483.77   | 505.63    | 494.40   | 494.60   |
 | Request Throughput   | 3.23     | 3.37      | 3.30     | 3.30     |
-| Per-User Throughput  | 26.29    | 27.36     | 26.89    | 26.85    |
+| Output Tok/User      | 26.29    | 27.36     | 26.89    | 26.85    |
 | Latency Std Dev      | 9,108.00 | 10,730.65 | 9,750.28 | 9,862.98 |
 | Request Count        | 1,162    | 1,177     | 1,167    | 1,169    |
 
@@ -385,7 +385,7 @@ xychart-beta
 | ITL (ms)             | 43.38     | 43.51    | 43.51     | 43.47     |
 | Output Throughput    | 501.16    | 499.88   | 503.06    | 501.37    |
 | Request Throughput   | 3.34      | 3.33     | 3.35      | 3.34      |
-| Per-User Throughput  | 27.19     | 27.20    | 26.59     | 26.99     |
+| Output Tok/User      | 27.19     | 27.20    | 26.59     | 26.99     |
 | Latency Std Dev      | 10,551.07 | 9,805.43 | 10,413.48 | 10,256.66 |
 | Request Count        | 1,177     | 1,166    | 1,174     | 1,172     |
 
@@ -398,7 +398,7 @@ xychart-beta
 | ITL (ms)             | 67.85     | 68.95     | 63.31     | 66.70     |
 | Output Throughput    | 400.90    | 399.57    | 427.37    | 409.28    |
 | Request Throughput   | 2.67      | 2.66      | 2.85      | 2.73      |
-| Per-User Throughput  | 18.29     | 17.96     | 19.64     | 18.63     |
+| Output Tok/User      | 18.29     | 17.96     | 19.64     | 18.63     |
 | Latency Std Dev      | 8,105.75  | 7,968.83  | 8,826.23  | 8,300.27  |
 
 ### 8.9 llm-d KVCache Aware (3 runs)
@@ -410,7 +410,7 @@ xychart-beta
 | ITL (ms)             | 69.00     | 66.29     | 68.67     | 67.99     |
 | Output Throughput    | 405.77    | 396.61    | 398.67    | 400.35    |
 | Request Throughput   | 2.71      | 2.64      | 2.66      | 2.67      |
-| Per-User Throughput  | 17.64     | 18.66     | 18.35     | 18.22     |
+| Output Tok/User      | 17.64     | 18.66     | 18.35     | 18.22     |
 | Latency Std Dev      | 7,321.22  | 8,088.14  | 8,125.67  | 7,845.01  |
 
 ---
@@ -424,7 +424,7 @@ The **Optimized Queue + Graceful Wait + Prefix Cache + 2\*LR** configuration del
 - **Output throughput +22.5%**: 501.37 vs 409.28 tok/s
 - **Request latency -31.2%**: 9,311 vs 13,535 ms
 - **ITL -34.8%**: 43.47 vs 66.70 ms — dramatically smoother token streaming
-- **Per-user throughput +44.9%**: 26.99 vs 18.63 tok/s/user — transformative individual user experience
+- **Output tok/user +44.9%**: 26.99 vs 18.63 tok/s/user — transformative individual user experience
 - **TTFT -21.2%**: 2,834 vs 3,597 ms — significantly faster first token delivery
 - **P50 TTFT -40.1%**: 282 vs 471 ms — typical users get first token 40% faster
 - **P90 TTFT -75.8%**: 3,109 vs 12,865 ms — 90% of requests get first token 4× faster
@@ -436,7 +436,7 @@ The **Session Affinity** variant also dramatically outperforms both llm-d baseli
 - **Output throughput +20.8%**: 494.60 vs 409.28 tok/s
 - **Request latency -31.4%**: 9,281 vs 13,535 ms — lowest average latency across all configs
 - **ITL -33.9%**: 44.08 vs 66.70 ms
-- **Per-user throughput +44.1%**: 26.85 vs 18.63 tok/s/user
+- **Output tok/user +44.1%**: 26.85 vs 18.63 tok/s/user
 - **TTFT -24.5%**: 2,715 vs 3,597 ms — best average TTFT across all configs
 - **P50 TTFT -36.5%**: 299 vs 471 ms
 
@@ -458,7 +458,7 @@ Under high-concurrency stress (40), the 3\*PC + 2\*LR + 2\*GPU configuration als
 - **Output throughput +1.9%**: 417.04 vs 409.28 tok/s
 - **Request latency -1.7%**: 13,304 vs 13,535 ms
 - **ITL -6.1%**: 62.65 vs 66.70 ms — noticeably smoother token streaming
-- **Per-user throughput +8.5%**: 20.21 vs 18.63 tok/s/user
+- **Output tok/user +8.5%**: 20.21 vs 18.63 tok/s/user
 
 ### 9.5 P90 Experience — OQ+GW Configs Excel Dramatically
 
@@ -506,7 +506,7 @@ Adding the Least Token dimension actually **degrades overall performance**.
 | **Maximum Throughput**              | OQ + GW + PC + 2\*LR           | **+22.5%** output throughput            |
 | **Lowest ITL (Streaming)**          | OQ + GW + PC + 2\*LR           | **-34.8%** ITL                          |
 | **Lowest Avg Latency**              | OQ + GW + SA + 2\*LR           | **-31.4%** request latency              |
-| **Best Per-User Throughput**        | OQ + GW + PC + 2\*LR           | **+44.9%** per-user throughput          |
+| **Best Output Tok/User**            | OQ + GW + PC + 2\*LR           | **+44.9%** output tok/user              |
 | **Best P90 Experience**             | OQ + GW + PC + 2\*LR           | TTFT -75.8%, Latency -51.7%, ITL -37.0% |
 | **Lowest Avg TTFT**                 | OQ + GW + SA + 2\*LR           | **-24.5%** TTFT                         |
 | **Best P50 TTFT**                   | OQ + GW + PC + 2\*LR           | **-40.1%** TTFT p50                     |
@@ -529,7 +529,7 @@ Under high-concurrency (40) multi-turn conversation workload:
 | Output Throughput   | **+22.5%**            | **+25.2%**             |
 | Request Latency     | **-31.2%**            | **-32.8%**             |
 | ITL                 | **-34.8%**            | **-36.1%**             |
-| Per-User Throughput | **+44.9%**            | **+48.1%**             |
+| Output Tok/User     | **+44.9%**            | **+48.1%**             |
 | TTFT                | **-21.2%**            | **-23.8%**             |
 | P50 TTFT            | **-40.1%**            | **-59.2%**             |
 | P50 Request Latency | **-30.5%**            | **-32.1%**             |
@@ -545,7 +545,7 @@ Under high-concurrency (40) multi-turn conversation workload:
 | Output Throughput   | **+20.8%**            | **+23.5%**             |
 | Request Latency     | **-31.4%**            | **-33.0%**             |
 | ITL                 | **-33.9%**            | **-35.2%**             |
-| Per-User Throughput | **+44.1%**            | **+47.4%**             |
+| Output Tok/User     | **+44.1%**            | **+47.4%**             |
 | TTFT                | **-24.5%**            | **-27.0%**             |
 | P50 TTFT            | **-36.5%**            | **-56.7%**             |
 | P50 Request Latency | **-29.3%**            | **-31.0%**             |
@@ -553,14 +553,14 @@ Under high-concurrency (40) multi-turn conversation workload:
 
 **Improvement over previous best (OQ + PC + 2\*LR):**
 
-| Metric              | OQ+GW+PC+2\*LR vs OQ+PC+2\*LR | OQ+GW+SA+2\*LR vs OQ+PC+2\*LR |
-| ------------------- | ----------------------------- | ----------------------------- |
-| Output Throughput   | **+10.4%**                    | **+8.9%**                     |
-| Request Latency     | **-6.1%**                     | **-6.4%**                     |
-| ITL                 | **-7.3%**                     | **-6.0%**                     |
-| Per-User Throughput | **+6.1%**                     | **+5.5%**                     |
-| TTFT                | **-3.3%**                     | **-7.4%**                     |
-| P50 TTFT            | **-63.3%** (282 vs 768 ms)    | **-61.0%** (299 vs 768 ms)    |
+| Metric            | OQ+GW+PC+2\*LR vs OQ+PC+2\*LR | OQ+GW+SA+2\*LR vs OQ+PC+2\*LR |
+| ----------------- | ----------------------------- | ----------------------------- |
+| Output Throughput | **+10.4%**                    | **+8.9%**                     |
+| Request Latency   | **-6.1%**                     | **-6.4%**                     |
+| ITL               | **-7.3%**                     | **-6.0%**                     |
+| Output Tok/User   | **+6.1%**                     | **+5.5%**                     |
+| TTFT              | **-3.3%**                     | **-7.4%**                     |
+| P50 TTFT          | **-63.3%** (282 vs 768 ms)    | **-61.0%** (299 vs 768 ms)    |
 
 **Kthena 3\*PC + 2\*LR + 2\*GPU remains a strong alternative** when 100% request completion is required:
 
@@ -569,7 +569,7 @@ Under high-concurrency (40) multi-turn conversation workload:
 | Output Throughput   | **+1.9%**             | **+4.2%**              |
 | Request Latency     | **-1.7%**             | **-3.9%**              |
 | ITL                 | **-6.1%**             | **-7.9%**              |
-| Per-User Throughput | **+8.5%**             | **+10.9%**             |
+| Output Tok/User     | **+8.5%**             | **+10.9%**             |
 | P50 TTFT            | **-8.2%**             | **-37.4%**             |
 | P50 Request Latency | **-7.8%**             | **-10.0%**             |
 | P50 ITL             | **-8.3%**             | **-8.5%**              |
@@ -586,4 +586,4 @@ Under high-concurrency (40) multi-turn conversation workload:
 | Request Completion | ~2.3% dropped under load          | ~2.6% dropped under load          |
 | Latency Std Dev    | 10,257 ms (+23.6% vs llm-d PC)    | 9,863 ms (+18.8% vs llm-d PC)     |
 
-**Core Conclusion:** The Graceful Wait mechanism represents a significant advancement over the base optimized queue approach. By combining optimized queue scheduling with graceful wait time management, Kthena achieves **31-35% lower latency/ITL, 22-25% higher throughput, and 45-48% higher per-user throughput** compared to both llm-d baselines. Critically, the Graceful Wait variants **resolve the p50 TTFT trade-off** that existed in the original OQ configuration — now delivering 36-40% lower p50 TTFT compared to llm-d (vs the previous +63% penalty). The OQ+GW+PC+2\*LR configuration is optimal for maximum throughput and best p50/p90 across all metrics, while OQ+GW+SA+2\*LR provides the lowest average TTFT and latency. For workloads requiring 100% request completion, the **3\*PC + 2\*LR + 2\*GPU** and **3\*KV + 2\*LR + 2\*GPU** configurations still outperform both llm-d baselines.
+**Core Conclusion:** The Graceful Wait mechanism represents a significant advancement over the base optimized queue approach. By combining optimized queue scheduling with graceful wait time management, Kthena achieves **31-35% lower latency/ITL, 22-25% higher throughput, and 45-48% higher output tok/user** compared to both llm-d baselines. Critically, the Graceful Wait variants **resolve the p50 TTFT trade-off** that existed in the original OQ configuration — now delivering 36-40% lower p50 TTFT compared to llm-d (vs the previous +63% penalty). The OQ+GW+PC+2\*LR configuration is optimal for maximum throughput and best p50/p90 across all metrics, while OQ+GW+SA+2\*LR provides the lowest average TTFT and latency. For workloads requiring 100% request completion, the **3\*PC + 2\*LR + 2\*GPU** and **3\*KV + 2\*LR + 2\*GPU** configurations still outperform both llm-d baselines.
