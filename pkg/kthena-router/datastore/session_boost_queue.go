@@ -128,6 +128,19 @@ type SessionBoostQueueConfig struct {
 	// The total inflight limit is InflightPerPod * podCount.
 	// Defaults to 1.
 	InflightPerPod int
+
+	// EnableWaitPromotion controls whether the wait-based promotion feature is enabled.
+	// When enabled, non-boosted requests that wait longer than MaxWaitBeforePromotion
+	// are promoted to boosted priority to prevent starvation.
+	// Configured via SESSION_BOOST_WAIT_PROMOTION_ENABLED env var. Defaults to true.
+	EnableWaitPromotion bool
+
+	// MaxWaitBeforePromotion is the maximum time a non-boosted request can wait
+	// before being promoted to boosted priority. This prevents starvation of
+	// first-turn requests under high multi-turn load.
+	// Only effective when EnableWaitPromotion is true.
+	// Configured via SESSION_BOOST_MAX_WAIT env var. Defaults to 5s.
+	MaxWaitBeforePromotion time.Duration
 }
 
 // DefaultSessionBoostQueueConfig returns default configuration for the session boost queue.
@@ -138,25 +151,42 @@ func DefaultSessionBoostQueueConfig() SessionBoostQueueConfig {
 		SessionBoostGracePeriod:  0,
 		BackpressurePollInterval: 100 * time.Millisecond,
 		InflightPerPod:           16,
+		EnableWaitPromotion:      true,
+		MaxWaitBeforePromotion:   5 * time.Second,
 	}
 }
 
 // sessionBoostHeap implements heap.Interface for session boost priority ordering.
-// Boosted requests always take priority over non-boosted ones.
-// Within the same boost status, FIFO ordering is used.
+// Boosted requests always take priority over non-boosted ones, unless a non-boosted
+// request has waited longer than maxWait (aging promotion to prevent starvation).
+// Within the same effective boost status, FIFO ordering is used.
 type sessionBoostHeap struct {
-	items []*Request
+	items   []*Request
+	maxWait time.Duration // MaxWaitBeforePromotion; 0 disables aging
 }
 
 func (h *sessionBoostHeap) Len() int { return len(h.items) }
 
 func (h *sessionBoostHeap) Less(i, j int) bool {
-	// Session-boosted requests always take priority over non-boosted ones.
-	if h.items[i].SessionBoost != h.items[j].SessionBoost {
-		return h.items[i].SessionBoost
+	bi := h.effectiveBoosted(h.items[i])
+	bj := h.effectiveBoosted(h.items[j])
+	if bi != bj {
+		return bi
 	}
-	// Within same boost status, use FIFO ordering.
+	// Within same effective boost status, use FIFO ordering.
 	return h.items[i].RequestTime.Before(h.items[j].RequestTime)
+}
+
+// effectiveBoosted returns true if the request is session-boosted OR has waited
+// longer than the configured maxWait threshold (aging promotion).
+func (h *sessionBoostHeap) effectiveBoosted(r *Request) bool {
+	if r.SessionBoost {
+		return true
+	}
+	if h.maxWait > 0 && time.Since(r.RequestTime) >= h.maxWait {
+		return true
+	}
+	return false
 }
 
 func (h *sessionBoostHeap) Swap(i, j int) {
@@ -198,6 +228,9 @@ type SessionBoostQueue struct {
 	inflightCount atomic.Int64
 	releaseCh     chan struct{}
 	podCounter    func() int
+
+	// Rate-limiting for backpressure logs to avoid excessive noise
+	lastBackpressureLog atomic.Int64 // unix nano timestamp of last backpressure log
 }
 
 // NewSessionBoostQueue creates a new standalone session boost queue.
@@ -205,11 +238,15 @@ func NewSessionBoostQueue(metricsInstance *metrics.Metrics, cfg SessionBoostQueu
 	if metricsInstance == nil {
 		metricsInstance = metrics.DefaultMetrics
 	}
+	maxWait := cfg.MaxWaitBeforePromotion
+	if !cfg.EnableWaitPromotion {
+		maxWait = 0
+	}
 	q := &SessionBoostQueue{
 		stopCh:         make(chan struct{}),
 		notifyCh:       make(chan struct{}, 1),
 		releaseCh:      make(chan struct{}, 1),
-		heap:           sessionBoostHeap{items: make([]*Request, 0)},
+		heap:           sessionBoostHeap{items: make([]*Request, 0), maxWait: maxWait},
 		metrics:        metricsInstance,
 		config:         cfg,
 		sessionTracker: NewSessionTracker(cfg.SessionBoostTTL),
@@ -241,7 +278,7 @@ func (q *SessionBoostQueue) PushRequest(r *Request) error {
 	}
 
 	if r.SessionBoost {
-		klog.V(4).Infof("[SessionBoostQueue] session boost: reqID=%s sessionID=%s promoted, queueLen=%d",
+		klog.V(2).Infof("[SessionBoostQueue] *** BOOSTED *** reqID=%s sessionID=%s reason=session_cache_hit queueLen=%d",
 			r.ReqID, r.SessionID, queueLen)
 	}
 
@@ -441,7 +478,7 @@ func (q *SessionBoostQueue) isHeadSessionBoosted() bool {
 func (q *SessionBoostQueue) waitGraceAndDequeue(ctx context.Context) {
 	// Fast path: head is already session-boosted.
 	if q.isHeadSessionBoosted() {
-		klog.V(4).Info("[SessionBoostQueue] grace: head already boosted, skipping wait")
+		klog.V(2).Info("[SessionBoostQueue] *** BOOSTED *** grace: head already boosted, fast-path dequeue")
 		q.tryBackpressureDequeue(ctx)
 		return
 	}
@@ -458,7 +495,7 @@ func (q *SessionBoostQueue) waitGraceAndDequeue(ctx context.Context) {
 			return
 		case <-q.notifyCh:
 			if q.isHeadSessionBoosted() {
-				klog.V(4).Info("[SessionBoostQueue] grace period: session-boosted request arrived, dequeuing immediately")
+				klog.V(2).Info("[SessionBoostQueue] *** BOOSTED *** grace period: session-boosted request arrived, dequeuing immediately")
 				q.tryBackpressureDequeue(ctx)
 				return
 			}
@@ -491,7 +528,7 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 		currentInflight := q.inflightCount.Load()
 
 		if currentInflight >= maxInflight {
-			klog.V(4).Infof("[SessionBoostQueue] backpressure: inflight limit reached, inflight=%d maxInflight=%d pods=%d perPod=%d",
+			q.logBackpressureThrottled("inflight limit reached, inflight=%d maxInflight=%d pods=%d perPod=%d",
 				currentInflight, maxInflight, podCount, perPod)
 			return
 		}
@@ -500,7 +537,7 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 			q.mu.RLock()
 			queueLen := q.heap.Len()
 			q.mu.RUnlock()
-			klog.V(4).Infof("[SessionBoostQueue] backpressure: backend pods busy, holding dequeue. queueLen=%d inflight=%d pods=%d",
+			q.logBackpressureThrottled("backend pods busy, holding dequeue. queueLen=%d inflight=%d pods=%d",
 				queueLen, currentInflight, podCount)
 			return
 		}
@@ -535,12 +572,35 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 			q.metrics.IncSessionBoostQueueInflight(req.ModelName)
 		}
 
-		klog.V(4).Infof("[SessionBoostQueue] backpressure dequeue: reqID=%s user=%s model=%s sessionBoost=%v inflight=%d/%d",
-			req.ReqID, req.UserID, req.ModelName, req.SessionBoost, q.inflightCount.Load(), maxInflight)
+		if req.SessionBoost {
+			klog.V(2).Infof("[SessionBoostQueue] *** BOOSTED DEQUEUE *** reqID=%s user=%s model=%s sessionID=%s reason=session_cache_hit inflight=%d/%d",
+				req.ReqID, req.UserID, req.ModelName, req.SessionID, q.inflightCount.Load(), maxInflight)
+		} else if q.config.EnableWaitPromotion && q.config.MaxWaitBeforePromotion > 0 && time.Since(req.RequestTime) >= q.config.MaxWaitBeforePromotion {
+			klog.V(2).Infof("[SessionBoostQueue] *** PROMOTED DEQUEUE *** reqID=%s user=%s model=%s reason=wait_timeout waited=%v inflight=%d/%d",
+				req.ReqID, req.UserID, req.ModelName, time.Since(req.RequestTime).Round(time.Millisecond), q.inflightCount.Load(), maxInflight)
+		} else {
+			klog.V(4).Infof("[SessionBoostQueue] dequeue: reqID=%s user=%s model=%s inflight=%d/%d",
+				req.ReqID, req.UserID, req.ModelName, q.inflightCount.Load(), maxInflight)
+		}
 
 		if req.NotifyChan != nil {
 			close(req.NotifyChan)
 		}
+	}
+}
+
+// backpressureLogInterval is the minimum interval between repeated backpressure log messages.
+const backpressureLogInterval = 5 * time.Second
+
+// logBackpressureThrottled logs a backpressure message at most once per backpressureLogInterval.
+func (q *SessionBoostQueue) logBackpressureThrottled(format string, args ...interface{}) {
+	now := time.Now().UnixNano()
+	last := q.lastBackpressureLog.Load()
+	if now-last < int64(backpressureLogInterval) {
+		return
+	}
+	if q.lastBackpressureLog.CompareAndSwap(last, now) {
+		klog.V(4).Infof("[SessionBoostQueue] backpressure: "+format, args...)
 	}
 }
 

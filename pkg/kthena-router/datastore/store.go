@@ -530,6 +530,21 @@ func createSessionBoostQueueConfigFromEnv() *SessionBoostQueueConfig {
 		}
 	}
 
+	if v := os.Getenv("SESSION_BOOST_WAIT_PROMOTION_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.EnableWaitPromotion = b
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_WAIT_PROMOTION_ENABLED: %q, using default %v", v, cfg.EnableWaitPromotion)
+		}
+	}
+	if v := os.Getenv("SESSION_BOOST_MAX_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			cfg.MaxWaitBeforePromotion = d
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_MAX_WAIT: %q, using default %v", v, cfg.MaxWaitBeforePromotion)
+		}
+	}
+
 	return &cfg
 }
 
