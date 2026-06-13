@@ -116,20 +116,24 @@ conversations are live simultaneously with 40 random requests sampled from them.
 
 ```mermaid
 flowchart LR
-    subgraph Pool["Conversation Backlog (120 total)"]
-        direction TB
-        P["C5, C6, C7, ... C120<br/>(waiting, FIFO)"]
-    end
+    Pool["Conversation Backlog<br/>C5, C6, C7 ... C120<br/>(waiting, FIFO)"]
+
     subgraph Slots["40 Concurrent Slots (always full)"]
-        direction TB
-        S1["Slot 1: Conv C1<br/>turn 1 → 2 → ... → 10"]
-        S2["Slot 2: Conv C2<br/>turn 1 → 2 → ... → 10"]
-        S3["Slot 3: Conv C3<br/>turn 1 → 2 → ... → 10"]
+        S1["Slot 1: Conv C1<br/>turn 1 to 10"]
+        S2["Slot 2: Conv C2<br/>turn 1 to 10"]
+        S3["Slot 3: Conv C3<br/>turn 1 to 10"]
         Sd["..."]
-        S40["Slot 40: Conv C4...<br/>turn 1 → 2 → ... → 10"]
+        S40["Slot 40: Conv C4<br/>turn 1 to 10"]
     end
-    Pool -->|"a slot frees only after<br/>ALL 10 turns finish"| Slots
-    Slots -->|sequential turns<br/>(turn N+1 needs turn N reply)| Backend["Router → vLLM Pods"]
+
+    Backend["Router to vLLM Pods"]
+
+    Pool -->|"a slot frees only after<br/>ALL 10 turns finish"| S1
+    S1 -->|"sequential turns"| Backend
+    S2 --> Backend
+    S3 --> Backend
+    Sd --> Backend
+    S40 --> Backend
 ```
 
 **Why this matters for the benchmark:**
