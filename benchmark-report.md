@@ -116,14 +116,14 @@ conversations are live simultaneously with 40 random requests sampled from them.
 
 ```mermaid
 flowchart LR
-    Pool["Conversation Backlog<br/>C5, C6, C7 ... C120<br/>(waiting, FIFO)"]
+    Pool["Conversation Backlog<br/>C41, C42, C43 ... C120<br/>(waiting, FIFO)"]
 
     subgraph Slots["40 Concurrent Slots (always full)"]
         S1["Slot 1: Conv C1<br/>turn 1 to 10"]
         S2["Slot 2: Conv C2<br/>turn 1 to 10"]
         S3["Slot 3: Conv C3<br/>turn 1 to 10"]
         Sd["..."]
-        S40["Slot 40: Conv C4<br/>turn 1 to 10"]
+        S40["Slot 40: Conv C40<br/>turn 1 to 10"]
     end
 
     Backend["Router to vLLM Pods"]
@@ -260,55 +260,68 @@ each). Lower is better for latency; higher is better for throughput.
 
 ## A.2 Comparison Charts
 
+> GitHub does not render Mermaid `xychart-beta`, so the comparison charts below use Markdown
+> tables, which render reliably in GitHub README/report views.
+
 ### A.2.1 Output Token Throughput (tokens/sec) — Higher is Better
 
-```mermaid
-xychart-beta
-    title "Output Token Throughput (tokens/sec) - Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
-    y-axis "Throughput (tokens/sec)" 350 --> 500
-    bar [437.83, 468.26, 457.77, 469.01, 465.10, 390.26, 409.90]
-```
+| Configuration       | Output Throughput (tok/s) |
+| ------------------- | ------------------------- |
+| Kthena LR           | 437.83                    |
+| Kthena LR+PC        | 468.26                    |
+| Kthena LR+PC(W\*2)  | 457.77                    |
+| **Kthena 2\*LR+PC** | **469.01**                |
+| Kthena LR+KVCache   | 465.10                    |
+| llm-d Default       | 390.26                    |
+| llm-d Precise KV    | 409.90                    |
 
 ### A.2.2 Time to First Token / TTFT (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "TTFT (ms) - Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
-    y-axis "TTFT (ms)" 200 --> 350
-    bar [290.60, 236.82, 248.49, 230.39, 304.39, 270.03, 327.33]
-```
+| Configuration       | TTFT (ms)  |
+| ------------------- | ---------- |
+| Kthena LR           | 290.60     |
+| Kthena LR+PC        | 236.82     |
+| Kthena LR+PC(W\*2)  | 248.49     |
+| **Kthena 2\*LR+PC** | **230.39** |
+| Kthena LR+KVCache   | 304.39     |
+| llm-d Default       | 270.03     |
+| llm-d Precise KV    | 327.33     |
 
 ### A.2.3 Request Latency (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "Request Latency (ms) - Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
-    y-axis "Latency (ms)" 2800 --> 3800
-    bar [3321.11, 3104.78, 3096.63, 3116.90, 3133.19, 3705.12, 3549.10]
-```
+| Configuration          | Request Latency (ms) |
+| ---------------------- | -------------------- |
+| Kthena LR              | 3,321.11             |
+| Kthena LR+PC           | 3,104.78             |
+| **Kthena LR+PC(W\*2)** | **3,096.63**         |
+| Kthena 2\*LR+PC        | 3,116.90             |
+| Kthena LR+KVCache      | 3,133.19             |
+| llm-d Default          | 3,705.12             |
+| llm-d Precise KV       | 3,549.10             |
 
 ### A.2.4 Inter Token Latency / ITL (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "Inter Token Latency (ms) - Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
-    y-axis "ITL (ms)" 17 --> 25
-    bar [20.34, 19.26, 19.12, 19.38, 18.99, 23.05, 21.62]
-```
+| Configuration         | ITL (ms)  |
+| --------------------- | --------- |
+| Kthena LR             | 20.34     |
+| Kthena LR+PC          | 19.26     |
+| Kthena LR+PC(W\*2)    | 19.12     |
+| Kthena 2\*LR+PC       | 19.38     |
+| **Kthena LR+KVCache** | **18.99** |
+| llm-d Default         | 23.05     |
+| llm-d Precise KV      | 21.62     |
 
 ### A.2.5 Request Throughput (req/s) — Higher is Better
 
-```mermaid
-xychart-beta
-    title "Request Throughput (req/s) - Concurrency 10"
-    x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
-    y-axis "Requests/sec" 2.4 --> 3.3
-    bar [2.92, 3.12, 3.05, 3.13, 3.10, 2.60, 2.73]
-```
+| Configuration       | Request Throughput (req/s) |
+| ------------------- | -------------------------- |
+| Kthena LR           | 2.92                       |
+| Kthena LR+PC        | 3.12                       |
+| Kthena LR+PC(W\*2)  | 3.05                       |
+| **Kthena 2\*LR+PC** | **3.13**                   |
+| Kthena LR+KVCache   | 3.10                       |
+| llm-d Default       | 2.60                       |
+| llm-d Precise KV    | 2.73                       |
 
 ## A.3 Kthena Advantage Analysis
 
@@ -336,13 +349,13 @@ For latency metrics, improvement = reduction; for throughput metrics, improvemen
 | **ITL**                | **-5.9%**  | **-10.9%**   | **-11.6%**         | **-10.4%**      | **-12.2%**        |
 | **TTFT**               | **-11.2%** | **-27.6%**   | **-24.1%**         | **-29.6%**      | **-7.0%**         |
 
-```mermaid
-xychart-beta
-    title "Best Kthena Improvement pct over llm-d Default - Concurrency 10"
-    x-axis ["Throughput", "Request/s", "Latency Reduction", "ITL Reduction", "TTFT Reduction"]
-    y-axis "Improvement (%)" -5 --> 22
-    bar [20.2, 20.4, 16.4, 17.6, 14.7]
-```
+| Best Kthena metric vs llm-d Default | Improvement |
+| ----------------------------------- | ----------- |
+| Throughput                          | +20.2%      |
+| Request/s                           | +20.4%      |
+| Latency Reduction                   | 16.4%       |
+| ITL Reduction                       | 17.6%       |
+| TTFT Reduction                      | 14.7%       |
 
 ### A.3.2 Latency Consistency — Lower Standard Deviation
 
@@ -407,65 +420,92 @@ each).
 
 ## B.2 Comparison Charts
 
+> GitHub does not render Mermaid `xychart-beta`, so the comparison charts below use Markdown
+> tables, which render reliably in GitHub README/report views.
+
 ### B.2.1 Output Token Throughput (tokens/sec) — Higher is Better
 
-```mermaid
-xychart-beta
-    title "Output Token Throughput (tokens/sec) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "Throughput (tokens/sec)" 370 --> 510
-    bar [387.37, 417.04, 393.03, 408.22, 454.04, 494.60, 501.37, 409.28, 400.35]
-```
+| Configuration            | Output Throughput (tok/s) |
+| ------------------------ | ------------------------- |
+| 2\*LR+PC                 | 387.37                    |
+| 3\*PC+2\*LR+2\*GPU       | 417.04                    |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 393.03                    |
+| 3\*KV+2\*LR+2\*GPU       | 408.22                    |
+| SBQ+PC+2\*LR             | 454.04                    |
+| SBQ+GW+SA+2\*LR          | 494.60                    |
+| **SBQ+GW+PC+2\*LR**      | **501.37**                |
+| llm-d PC                 | 409.28                    |
+| llm-d KV                 | 400.35                    |
 
 ### B.2.2 TTFT (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "TTFT (ms) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "TTFT (ms)" 2500 --> 4700
-    bar [4517.07, 3970.48, 4078.79, 3824.83, 2931.46, 2714.66, 2834.42, 3596.66, 3717.75]
-```
+| Configuration            | TTFT (ms)    |
+| ------------------------ | ------------ |
+| 2\*LR+PC                 | 4,517.07     |
+| 3\*PC+2\*LR+2\*GPU       | 3,970.48     |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 4,078.79     |
+| 3\*KV+2\*LR+2\*GPU       | 3,824.83     |
+| SBQ+PC+2\*LR             | 2,931.46     |
+| **SBQ+GW+SA+2\*LR**      | **2,714.66** |
+| SBQ+GW+PC+2\*LR          | 2,834.42     |
+| llm-d PC                 | 3,596.66     |
+| llm-d KV                 | 3,717.75     |
 
 ### B.2.3 Request Latency (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "Request Latency (ms) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "Latency (ms)" 9000 --> 15500
-    bar [14951.23, 13303.99, 14547.27, 13454.16, 9912.13, 9281.22, 9310.85, 13534.92, 13847.30]
-```
+| Configuration            | Request Latency (ms) |
+| ------------------------ | -------------------- |
+| 2\*LR+PC                 | 14,951.23            |
+| 3\*PC+2\*LR+2\*GPU       | 13,303.99            |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 14,547.27            |
+| 3\*KV+2\*LR+2\*GPU       | 13,454.16            |
+| SBQ+PC+2\*LR             | 9,912.13             |
+| **SBQ+GW+SA+2\*LR**      | **9,281.22**         |
+| SBQ+GW+PC+2\*LR          | 9,310.85             |
+| llm-d PC                 | 13,534.92            |
+| llm-d KV                 | 13,847.30            |
 
 ### B.2.4 Inter Token Latency / ITL (ms) — Lower is Better
 
-```mermaid
-xychart-beta
-    title "Inter Token Latency (ms) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "ITL (ms)" 40 --> 74
-    bar [70.03, 62.65, 70.27, 64.63, 46.87, 44.08, 43.47, 66.70, 67.99]
-```
+| Configuration            | ITL (ms)  |
+| ------------------------ | --------- |
+| 2\*LR+PC                 | 70.03     |
+| 3\*PC+2\*LR+2\*GPU       | 62.65     |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 70.27     |
+| 3\*KV+2\*LR+2\*GPU       | 64.63     |
+| SBQ+PC+2\*LR             | 46.87     |
+| SBQ+GW+SA+2\*LR          | 44.08     |
+| **SBQ+GW+PC+2\*LR**      | **43.47** |
+| llm-d PC                 | 66.70     |
+| llm-d KV                 | 67.99     |
 
 ### B.2.5 Output Tok Throughput Per User (tok/s/user) — Higher is Better
 
-```mermaid
-xychart-beta
-    title "Output Tok Throughput Per User (tok/s/user) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "Output Tok/User (tok/s/user)" 15 --> 28
-    bar [17.61, 20.21, 17.23, 19.89, 25.44, 26.85, 26.99, 18.63, 18.22]
-```
+| Configuration            | Output Tok/User (tok/s/user) |
+| ------------------------ | ---------------------------- |
+| 2\*LR+PC                 | 17.61                        |
+| 3\*PC+2\*LR+2\*GPU       | 20.21                        |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 17.23                        |
+| 3\*KV+2\*LR+2\*GPU       | 19.89                        |
+| SBQ+PC+2\*LR             | 25.44                        |
+| SBQ+GW+SA+2\*LR          | 26.85                        |
+| **SBQ+GW+PC+2\*LR**      | **26.99**                    |
+| llm-d PC                 | 18.63                        |
+| llm-d KV                 | 18.22                        |
 
 ### B.2.6 Request Throughput (req/s) — Higher is Better
 
-```mermaid
-xychart-beta
-    title "Request Throughput (req/s) - Concurrency 40"
-    x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
-    y-axis "Requests/sec" 2.4 --> 3.5
-    bar [2.58, 2.78, 2.62, 2.72, 3.03, 3.30, 3.34, 2.73, 2.67]
-```
+| Configuration            | Request Throughput (req/s) |
+| ------------------------ | -------------------------- |
+| 2\*LR+PC                 | 2.58                       |
+| 3\*PC+2\*LR+2\*GPU       | 2.78                       |
+| 3\*PC+2\*LR+2\*GPU+2\*LT | 2.62                       |
+| 3\*KV+2\*LR+2\*GPU       | 2.72                       |
+| SBQ+PC+2\*LR             | 3.03                       |
+| SBQ+GW+SA+2\*LR          | 3.30                       |
+| **SBQ+GW+PC+2\*LR**      | **3.34**                   |
+| llm-d PC                 | 2.73                       |
+| llm-d KV                 | 2.67                       |
 
 ## B.3 Kthena Advantage Analysis
 
@@ -483,13 +523,14 @@ For latency metrics: negative = lower (better). For throughput metrics: positive
 | **Kthena SBQ+GW+SA+2\*LR**          | **+20.9%** ✅       | **-24.5%** ✅ | **-33.9%** ✅ | **-31.4%** ✅    | **+20.8%** ✅      | **+44.1%** ✅    |
 | **Kthena SBQ+GW+PC+2\*LR**          | **+22.3%** ✅       | **-21.2%** ✅ | **-34.8%** ✅ | **-31.2%** ✅    | **+22.5%** ✅      | **+44.9%** ✅    |
 
-```mermaid
-xychart-beta
-    title "Kthena SBQ+GW+PC+2LR Improvement vs llm-d Prefix Cache (C40)"
-    x-axis ["Throughput +22.5%", "Req/s +22.3%", "Latency -31.2%", "ITL -34.8%", "Tok/User +44.9%", "TTFT -21.2%"]
-    y-axis "Improvement (%)" 0 --> 48
-    bar [22.5, 22.3, 31.2, 34.8, 44.9, 21.2]
-```
+| SBQ+GW+PC+2\*LR vs llm-d Prefix Cache | Improvement |
+| ------------------------------------- | ----------- |
+| Throughput                            | +22.5%      |
+| Request/s                             | +22.3%      |
+| Latency Reduction                     | 31.2%       |
+| ITL Reduction                         | 34.8%       |
+| Tok/User                              | +44.9%      |
+| TTFT Reduction                        | 21.2%       |
 
 ### B.3.2 Each Kthena Configuration vs llm-d KVCache Aware
 
@@ -538,13 +579,16 @@ Request Latency **-30.5%** (7,147 vs 10,281 ms), ITL **-34.5%** (42.27 vs 64.53 
 > (768 ms, +63% vs llm-d). Adding Graceful Wait drops p50 TTFT to 282 ms (**-40%** vs llm-d) —
 > now leading in all three p50 metrics simultaneously.
 
-```mermaid
-xychart-beta
-    title "P50 Request Latency (div100) and ITL (ms) - Concurrency 40"
-    x-axis ["SBQ+GW+PC Lat", "SBQ+GW+PC ITL", "SBQ+GW+SA Lat", "SBQ+GW+SA ITL", "SBQ Lat", "SBQ ITL", "llm-d PC Lat", "llm-d PC ITL"]
-    y-axis "ms" 0 --> 110
-    bar [71.47, 42.27, 72.64, 43.09, 76.37, 43.83, 102.81, 64.53]
-```
+| P50 Metric              | Value (ms) |
+| ----------------------- | ---------- |
+| SBQ+GW+PC latency / 100 | 71.47      |
+| SBQ+GW+PC ITL           | 42.27      |
+| SBQ+GW+SA latency / 100 | 72.64      |
+| SBQ+GW+SA ITL           | 43.09      |
+| SBQ latency / 100       | 76.37      |
+| SBQ ITL                 | 43.83      |
+| llm-d PC latency / 100  | 102.81     |
+| llm-d PC ITL            | 64.53      |
 
 ## B.5 P90 Latency
 
@@ -740,13 +784,12 @@ flowchart LR
 
 ## C.3 Throughput Across Both Regimes (Best Configs vs llm-d)
 
-```mermaid
-xychart-beta
-    title "Output Throughput (tok/s): Best Kthena vs Best llm-d"
-    x-axis ["Low C10 Kthena", "Low C10 llm-d", "High C40 Kthena", "High C40 llm-d"]
-    y-axis "tok/s" 380 --> 520
-    bar [469.01, 409.90, 501.37, 409.28]
-```
+| Regime   | Best System | Output Throughput (tok/s) |
+| -------- | ----------- | ------------------------- |
+| Low C10  | Kthena      | 469.01                    |
+| Low C10  | llm-d       | 409.90                    |
+| High C40 | Kthena      | 501.37                    |
+| High C40 | llm-d       | 409.28                    |
 
 ---
 
