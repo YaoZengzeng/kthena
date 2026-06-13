@@ -97,7 +97,74 @@ Because each turn re-sends the prior context, the **prefix cache hit rate** is t
 performance lever: a router that keeps a session pinned to the pod holding its KV/prefix cache
 avoids recomputing thousands of prompt tokens, slashing TTFT and freeing GPU cycles for decode.
 
-### 1.5 Load Scenarios — Low vs High
+### 1.5 Concurrency Model — Conversation Slots, Not Request Sampling
+
+A critical detail of the AIPerf `basic` workload is **what "concurrency" actually means**. It is
+the number of **conversation slots** that are active at the same time — *not* a random sample of
+requests drawn from the whole pool.
+
+- Concurrency `C` keeps **exactly `C` conversations in flight** at any instant.
+- Within a slot, the conversation's turns run **strictly sequentially**: turn *N+1* is only sent
+  **after** turn *N*'s full response is received (it depends on that response).
+- A slot only picks up a **new** conversation **after its current conversation has finished all
+  of its turns**. Conversations are processed to completion, one-after-another per slot.
+
+So at concurrency **40**, there are always **40 distinct conversations** progressing in parallel.
+The remaining conversations (e.g. the other 80 of the 120 total) **wait in a backlog** and are
+admitted into a slot only as earlier conversations complete. It is **NOT** the case that all 120
+conversations are live simultaneously with 40 random requests sampled from them.
+
+```mermaid
+flowchart LR
+    subgraph Pool["Conversation Backlog (120 total)"]
+        direction TB
+        P["C5, C6, C7, ... C120<br/>(waiting, FIFO)"]
+    end
+    subgraph Slots["40 Concurrent Slots (always full)"]
+        direction TB
+        S1["Slot 1: Conv C1<br/>turn 1 → 2 → ... → 10"]
+        S2["Slot 2: Conv C2<br/>turn 1 → 2 → ... → 10"]
+        S3["Slot 3: Conv C3<br/>turn 1 → 2 → ... → 10"]
+        Sd["..."]
+        S40["Slot 40: Conv C4...<br/>turn 1 → 2 → ... → 10"]
+    end
+    Pool -->|"a slot frees only after<br/>ALL 10 turns finish"| Slots
+    Slots -->|sequential turns<br/>(turn N+1 needs turn N reply)| Backend["Router → vLLM Pods"]
+```
+
+**Why this matters for the benchmark:**
+
+- **Session locality is stable and exploitable.** Because a conversation stays in its slot until
+  done, its 10 turns form one uninterrupted multi-turn sequence — exactly the pattern that
+  prefix-cache / session-affinity routing is designed to accelerate. Each follow-up turn has a
+  warm cache on the pod that served the previous turn.
+- **Load is steady, not bursty.** The offered load is self-pacing: a turn is only issued once the
+  previous turn returns, so total in-flight requests ≈ concurrency, and a new conversation enters
+  only on completion. This is what lets concurrency act as a clean, repeatable load knob.
+- **It rewards good admission control under saturation.** At C=40 with 3 GPUs, the 40 active
+  conversations contend for limited capacity. A router that briefly holds a freed slot for the
+  *same* session's next turn (Graceful Wait) or boosts recently-active sessions (SBQ) keeps each
+  conversation's turns on a warm pod — directly improving end-to-end latency.
+
+```mermaid
+sequenceDiagram
+    participant Slot as Slot k (one of 40)
+    participant Router
+    participant Pod as Warm vLLM Pod
+    Note over Slot: Conversation C is assigned to this slot
+    Slot->>Router: Turn 1 (prompt ≈ 2000 tok)
+    Router->>Pod: route (cold cache)
+    Pod-->>Slot: response 1 (streamed)
+    Slot->>Router: Turn 2 (only after reply 1)
+    Router->>Pod: route to SAME pod (warm cache → low TTFT)
+    Pod-->>Slot: response 2
+    Note over Slot,Pod: ... repeats through Turn 10 ...
+    Slot->>Router: Turn 10
+    Pod-->>Slot: response 10
+    Note over Slot: Conversation C complete →<br/>slot pulls NEXT conversation from backlog
+```
+
+### 1.6 Load Scenarios — Low vs High
 
 ```mermaid
 flowchart TB
@@ -131,7 +198,7 @@ flowchart TB
 > *queue management* — i.e. whether the router can hold and admit requests intelligently
 > (Session Boost Queue + Graceful Wait) instead of dumping everything onto already-busy pods.
 
-### 1.6 Configurations Tested
+### 1.7 Configurations Tested
 
 Different configuration families are emphasized at each load level: simple weighted routing
 suffices at low load, whereas advanced queue-aware strategies are required at high load.
