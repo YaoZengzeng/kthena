@@ -84,11 +84,11 @@ CONVERSATION_NUM=120 TURN_MEAN=10 INPUT_TOKENS_MEAN=2000 CONCURRENCY=40 \
 ```mermaid
 flowchart LR
     subgraph Conversation["One Conversation (session id = S)"]
-        T1["Turn 1<br/>prompt ≈ 2000 tok"] --> T2["Turn 2<br/>prompt = T1 + reply + new"]
+        T1["Turn 1<br/>prompt ~2000 tok"] --> T2["Turn 2<br/>prompt = T1 + reply + new"]
         T2 --> T3["Turn 3<br/>prompt = T1..T2 + new"]
         T3 --> Tn["... Turn 10"]
     end
-    AIPerf["AIPerf<br/>(N conversations<br/>× concurrency)"] --> Router["Kthena Router /<br/>llm-d Gateway"]
+    AIPerf["AIPerf<br/>(N conversations<br/>x concurrency)"] --> Router["Kthena Router /<br/>llm-d Gateway"]
     Router -->|route by score| Pods["vLLM Pods<br/>(3 GPUs)"]
     Pods -->|prefix / KV cache hit<br/>on same session| Router
 ```
@@ -156,31 +156,31 @@ sequenceDiagram
     participant Router
     participant Pod as Warm vLLM Pod
     Note over Slot: Conversation C is assigned to this slot
-    Slot->>Router: Turn 1 (prompt ≈ 2000 tok)
+    Slot->>Router: Turn 1 (prompt ~2000 tok)
     Router->>Pod: route (cold cache)
     Pod-->>Slot: response 1 (streamed)
     Slot->>Router: Turn 2 (only after reply 1)
-    Router->>Pod: route to SAME pod (warm cache → low TTFT)
+    Router->>Pod: route to SAME pod (warm cache, low TTFT)
     Pod-->>Slot: response 2
     Note over Slot,Pod: ... repeats through Turn 10 ...
     Slot->>Router: Turn 10
     Pod-->>Slot: response 10
-    Note over Slot: Conversation C complete →<br/>slot pulls NEXT conversation from backlog
+    Note over Slot: Conversation C complete,<br/>slot pulls NEXT conversation from backlog
 ```
 
 ### 1.6 Load Scenarios — Low vs High
 
 ```mermaid
 flowchart TB
-    subgraph Low["Low Load — Concurrency 10"]
-        L1["100 conversations × 10 turns<br/>= 1,000 requests"]
+    subgraph Low["Low Load - Concurrency 10"]
+        L1["100 conversations x 10 turns<br/>= 1,000 requests"]
         L2["3 GPUs have spare capacity"]
         L3["Routing quality dominates<br/>(cache locality)"]
     end
-    subgraph High["High Load — Concurrency 40"]
-        H1["120 conversations × 10 turns<br/>= 1,200 requests"]
-        H2["3 GPUs saturated → queueing"]
-        H3["Admission control & backpressure<br/>dominate (SBQ / Graceful Wait)"]
+    subgraph High["High Load - Concurrency 40"]
+        H1["120 conversations x 10 turns<br/>= 1,200 requests"]
+        H2["3 GPUs saturated, queueing"]
+        H3["Admission control and backpressure<br/>dominate (SBQ / Graceful Wait)"]
     end
 ```
 
@@ -264,7 +264,7 @@ each). Lower is better for latency; higher is better for throughput.
 
 ```mermaid
 xychart-beta
-    title "Output Token Throughput (tokens/sec) — Concurrency 10"
+    title "Output Token Throughput (tokens/sec) - Concurrency 10"
     x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Throughput (tokens/sec)" 350 --> 500
     bar [437.83, 468.26, 457.77, 469.01, 465.10, 390.26, 409.90]
@@ -274,7 +274,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "TTFT (ms) — Concurrency 10"
+    title "TTFT (ms) - Concurrency 10"
     x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "TTFT (ms)" 200 --> 350
     bar [290.60, 236.82, 248.49, 230.39, 304.39, 270.03, 327.33]
@@ -284,7 +284,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Request Latency (ms) — Concurrency 10"
+    title "Request Latency (ms) - Concurrency 10"
     x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Latency (ms)" 2800 --> 3800
     bar [3321.11, 3104.78, 3096.63, 3116.90, 3133.19, 3705.12, 3549.10]
@@ -294,7 +294,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Inter Token Latency (ms) — Concurrency 10"
+    title "Inter Token Latency (ms) - Concurrency 10"
     x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "ITL (ms)" 17 --> 25
     bar [20.34, 19.26, 19.12, 19.38, 18.99, 23.05, 21.62]
@@ -304,7 +304,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Request Throughput (req/s) — Concurrency 10"
+    title "Request Throughput (req/s) - Concurrency 10"
     x-axis ["Kthena LR", "Kthena LR+PC", "Kthena LR+PC(W*2)", "Kthena 2*LR+PC", "Kthena LR+KVCache", "llm-d Default", "llm-d Precise KV"]
     y-axis "Requests/sec" 2.4 --> 3.3
     bar [2.92, 3.12, 3.05, 3.13, 3.10, 2.60, 2.73]
@@ -338,7 +338,7 @@ For latency metrics, improvement = reduction; for throughput metrics, improvemen
 
 ```mermaid
 xychart-beta
-    title "Best Kthena Improvement (%) over llm-d Default — Concurrency 10"
+    title "Best Kthena Improvement pct over llm-d Default - Concurrency 10"
     x-axis ["Throughput", "Request/s", "Latency Reduction", "ITL Reduction", "TTFT Reduction"]
     y-axis "Improvement (%)" -5 --> 22
     bar [20.2, 20.4, 16.4, 17.6, 14.7]
@@ -411,7 +411,7 @@ each).
 
 ```mermaid
 xychart-beta
-    title "Output Token Throughput (tokens/sec) — Concurrency 40"
+    title "Output Token Throughput (tokens/sec) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "Throughput (tokens/sec)" 370 --> 510
     bar [387.37, 417.04, 393.03, 408.22, 454.04, 494.60, 501.37, 409.28, 400.35]
@@ -421,7 +421,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "TTFT (ms) — Concurrency 40"
+    title "TTFT (ms) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "TTFT (ms)" 2500 --> 4700
     bar [4517.07, 3970.48, 4078.79, 3824.83, 2931.46, 2714.66, 2834.42, 3596.66, 3717.75]
@@ -431,7 +431,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Request Latency (ms) — Concurrency 40"
+    title "Request Latency (ms) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "Latency (ms)" 9000 --> 15500
     bar [14951.23, 13303.99, 14547.27, 13454.16, 9912.13, 9281.22, 9310.85, 13534.92, 13847.30]
@@ -441,7 +441,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Inter Token Latency (ms) — Concurrency 40"
+    title "Inter Token Latency (ms) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "ITL (ms)" 40 --> 74
     bar [70.03, 62.65, 70.27, 64.63, 46.87, 44.08, 43.47, 66.70, 67.99]
@@ -451,7 +451,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Output Tok Throughput Per User (tok/s/user) — Concurrency 40"
+    title "Output Tok Throughput Per User (tok/s/user) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "Output Tok/User (tok/s/user)" 15 --> 28
     bar [17.61, 20.21, 17.23, 19.89, 25.44, 26.85, 26.99, 18.63, 18.22]
@@ -461,7 +461,7 @@ xychart-beta
 
 ```mermaid
 xychart-beta
-    title "Request Throughput (req/s) — Concurrency 40"
+    title "Request Throughput (req/s) - Concurrency 40"
     x-axis ["2*LR+PC", "3*PC+2*LR+2*GPU", "3*PC+2*LR+2*GPU+2*LT", "3*KV+2*LR+2*GPU", "SBQ+PC+2*LR", "SBQ+GW+SA+2*LR", "SBQ+GW+PC+2*LR", "llm-d PC", "llm-d KV"]
     y-axis "Requests/sec" 2.4 --> 3.5
     bar [2.58, 2.78, 2.62, 2.72, 3.03, 3.30, 3.34, 2.73, 2.67]
@@ -485,7 +485,7 @@ For latency metrics: negative = lower (better). For throughput metrics: positive
 
 ```mermaid
 xychart-beta
-    title "Kthena SBQ+GW+PC+2*LR — Improvement vs llm-d Prefix Cache (C40)"
+    title "Kthena SBQ+GW+PC+2LR Improvement vs llm-d Prefix Cache (C40)"
     x-axis ["Throughput +22.5%", "Req/s +22.3%", "Latency -31.2%", "ITL -34.8%", "Tok/User +44.9%", "TTFT -21.2%"]
     y-axis "Improvement (%)" 0 --> 48
     bar [22.5, 22.3, 31.2, 34.8, 44.9, 21.2]
@@ -540,7 +540,7 @@ Request Latency **-30.5%** (7,147 vs 10,281 ms), ITL **-34.5%** (42.27 vs 64.53 
 
 ```mermaid
 xychart-beta
-    title "P50 Request Latency (÷100) & ITL (ms) — Concurrency 40"
+    title "P50 Request Latency (div100) and ITL (ms) - Concurrency 40"
     x-axis ["SBQ+GW+PC Lat", "SBQ+GW+PC ITL", "SBQ+GW+SA Lat", "SBQ+GW+SA ITL", "SBQ Lat", "SBQ ITL", "llm-d PC Lat", "llm-d PC ITL"]
     y-axis "ms" 0 --> 110
     bar [71.47, 42.27, 72.64, 43.09, 76.37, 43.83, 102.81, 64.53]
@@ -708,9 +708,9 @@ Request Latency **-51.7%** (13,143 vs 27,199 ms), ITL **-37.0%** (62.52 vs 99.26
 
 ```mermaid
 flowchart LR
-    A["Low Load<br/>Concurrency 10"] -->|spare capacity →<br/>cache locality wins| B["Best: 2*LR + Prefix Cache"]
-    C["High Load<br/>Concurrency 40"] -->|saturation →<br/>admission control wins| D["Best: SBQ + GW + PC + 2*LR"]
-    B -.->|degrades under<br/>saturation: -5% tput| C
+    A["Low Load<br/>Concurrency 10"] -->|spare capacity,<br/>cache locality wins| B["Best: 2xLR + Prefix Cache"]
+    C["High Load<br/>Concurrency 40"] -->|saturation,<br/>admission control wins| D["Best: SBQ + GW + PC + 2xLR"]
+    B -.->|degrades under<br/>saturation: -5pct tput| C
     D -.->|overkill at<br/>low load| A
 ```
 
