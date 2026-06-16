@@ -238,6 +238,114 @@ suffices at low load, whereas advanced queue-aware strategies are required at hi
   turn can be admitted to its warm pod instead of an unrelated request grabbing the slot.
 - **SA (Session Affinity)** — pin a session to its pod for cache stability.
 
+### 1.8 llm-d Configuration Details
+
+The llm-d baselines were deployed using the
+[install-llm-d.sh](https://github.com/YaoZengzeng/scripts/blob/master/llm-d/install-llm-d.sh)
+script, which clones the [llm-d/llm-d](https://github.com/llm-d/llm-d) repository at
+**v0.5.1** and deploys via its official Helm guides. The script supports two modes
+controlled by the `ENABLE_PRECISE_PREFIX` environment variable:
+
+#### llm-d Default (`ENABLE_PRECISE_PREFIX=false`)
+
+Deploys the **inference-scheduling** guide. The EPP (Endpoint Picker) uses the
+built-in default configuration (`loadDefaultConfig()` in source), which enables the
+**approximate** prefix-cache-aware scorer — it predicts prefix cache locality by
+observing request traffic patterns only, without introspecting vLLM's actual cache
+state.
+
+| Plugin Type                         | Role                                                                                  | Weight     |
+| ----------------------------------- | ------------------------------------------------------------------------------------- | ---------- |
+| `prefix-cache-scorer` (approx mode) | Scores pods by predicted prefix cache match based on request hash similarity          | **3.0**    |
+| `kv-cache-utilization-scorer`       | Scores pods inversely proportional to their KV cache utilization (prefer less-loaded) | **2.0**    |
+| `queue-scorer`                      | Scores pods inversely proportional to their pending queue depth                       | **2.0**    |
+| `max-score-picker`                  | Selects the pod with the highest combined weighted score                              | — (picker) |
+
+> **Source:** [`pkg/epp/config/loader/defaults.go`](https://github.com/llm-d/llm-d-router/blob/main/pkg/epp/config/loader/defaults.go)
+> in the llm-d-router (formerly llm-d-inference-scheduler) repository.
+
+Additionally, the default configuration auto-injects:
+- **Handler:** `single-profile-handler`
+- **Data Producers:** `approx-prefix-cache-producer`, `inflight-load-producer`, `metrics-data-source`, `core-metrics-extractor`
+- **Flow Control:** `fcfs-ordering-policy`, `global-strict-fairness-policy`, `static-usage-limit-policy`, `utilization-detector`
+- **Parsers:** `openai-parser`, `anthropic-parser`, `vllmhttp-parser`
+
+#### llm-d Precise KV Cache (`ENABLE_PRECISE_PREFIX=true`)
+
+Deploys the **precise-prefix-cache-aware** guide. This mode uses KV-events
+subscription (via ZMQ) to introspect actual KV cache entries on each vLLM pod,
+enabling exact prefix match scoring rather than approximate prediction. It also
+requires a tokenizer sidecar (`llm-d-uds-tokenizer`) to tokenize incoming requests
+for precise block-level matching.
+
+The explicit `pluginsCustomConfig` from the GAIE values:
+
+```yaml
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+  - type: single-profile-handler
+  - type: precise-prefix-cache-scorer
+    parameters:
+      tokenProcessorConfig:
+        blockSize: 64
+      indexerConfig:
+        tokenizersPoolConfig:
+          modelName: Qwen/Qwen3-0.6B
+      kvEventsConfig:
+        topicFilter: "kv@"
+        concurrency: 4
+        discoverPods: false
+        zmqEndpoint: "tcp://*:5557"
+  - type: kv-cache-utilization-scorer
+  - type: queue-scorer
+  - type: max-score-picker
+schedulingProfiles:
+  - name: default
+    plugins:
+      - pluginRef: precise-prefix-cache-scorer
+        weight: 3.0
+      - pluginRef: kv-cache-utilization-scorer
+        weight: 2.0
+      - pluginRef: queue-scorer
+        weight: 2.0
+      - pluginRef: max-score-picker
+```
+
+| Plugin Type                   | Role                                                                                       | Weight     |
+| ----------------------------- | ------------------------------------------------------------------------------------------ | ---------- |
+| `precise-prefix-cache-scorer` | Scores pods by **exact** KV-cache block match (introspects actual cache via ZMQ KV-events) | **3.0**    |
+| `kv-cache-utilization-scorer` | Scores pods inversely proportional to KV cache utilization                                 | **2.0**    |
+| `queue-scorer`                | Scores pods inversely proportional to pending queue depth                                  | **2.0**    |
+| `max-score-picker`            | Selects the pod with the highest combined weighted score                                   | — (picker) |
+
+**Key difference:** Both modes use the **same weights** (prefix=3.0, kv-cache=2.0,
+queue=2.0). The critical difference is the **data source** for the prefix scorer:
+
+- **Default (approx):** The scorer relies on the `approx-prefix-cache-producer`,
+  which heuristically predicts cache locality from observed request traffic patterns
+  — no actual cache state introspection.
+- **Precise:** The scorer subscribes to real-time KV-events via ZMQ from each vLLM
+  pod, performing exact block-level prefix matching against the actual KV cache
+  contents. This requires a tokenizer sidecar (`llm-d-uds-tokenizer`) to tokenize
+  incoming requests for block-level comparison.
+
+The precise mode achieves higher cache hit rates at the cost of additional
+infrastructure complexity (ZMQ subscriber, tokenizer sidecar, per-pod KV-event
+publishing).
+
+#### Deployment Parameters (common to both modes)
+
+| Parameter                 | Value                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------- |
+| llm-d version             | v0.5.1                                                                                        |
+| Inference Scheduler image | `ghcr.io/llm-d/llm-d-inference-scheduler:v0.6.0`                                              |
+| Model                     | Qwen/Qwen3-0.6B                                                                               |
+| Replicas                  | 3                                                                                             |
+| Tensor Parallel           | 1 (single GPU per pod)                                                                        |
+| Gateway                   | Istio                                                                                         |
+| Script                    | [install-llm-d.sh](https://github.com/YaoZengzeng/scripts/blob/master/llm-d/install-llm-d.sh) |
+
 ---
 
 # PART A — Low Load Results (Concurrency = 10)
@@ -607,7 +715,7 @@ Request Latency **-30.5%** (7,147 vs 10,281 ms), ITL **-34.5%** (42.27 vs 64.53 
 **SBQ+GW+PC+2\*LR vs llm-d Prefix Cache (p90):** TTFT **-75.8%** (3,109 vs 12,865 ms),
 Request Latency **-51.7%** (13,143 vs 27,199 ms), ITL **-37.0%** (62.52 vs 99.26 ms).
 
-## B.6 Tail Latency (P99) — The Trade-off
+## B.6 Tail Latency (P99)
 
 | Metric                   | 2\*LR+PC | 3\*PC+2\*LR+2\*GPU | 3\*KV+2\*LR+2\*GPU | SBQ+PC+2\*LR | SBQ+GW+SA+2\*LR | SBQ+GW+PC+2\*LR | llm-d PC | llm-d KV |
 | ------------------------ | -------- | ------------------ | ------------------ | ------------ | --------------- | --------------- | -------- | -------- |
@@ -615,11 +723,76 @@ Request Latency **-51.7%** (13,143 vs 27,199 ms), ITL **-37.0%** (62.52 vs 99.26
 | Request Latency p99 (ms) | 31,541   | 39,500             | 35,726             | 53,786       | 65,411          | 64,785          | 34,519   | 31,892   |
 | ITL p99 (ms)             | 102.56   | 102.74             | 103.21             | 97.62        | 86.38           | 87.69           | 104.13   | 102.05   |
 
-> **The SBQ+GW trade-off:** to deliver dramatically better p50/p90 and average results, the
-> SBQ+GW configs accept **higher TTFT/latency p99 outliers** (up to ~59s max TTFT under peak
-> load) and a **~2.3–2.6% request drop**. However their **ITL p99 is the lowest** (86–88 ms vs
-> 102–104 ms, **-17%**), so even worst-case token streaming is faster. For the lowest TTFT/latency
-> p99, **2\*LR + PC** remains best (TTFT p99 -15.8%, Latency p99 -8.6% vs llm-d PC).
+### B.6.1 ⚠️ Session Boost Queue P99 Disadvantage Analysis
+
+Although SBQ configurations **dominate on average, P50, and P90** across all metrics,
+they exhibit a **significant disadvantage at P99 tail latency** compared to llm-d.
+The tables below provide a direct percentile-by-percentile comparison between the
+best SBQ configuration and llm-d:
+
+#### TTFT by Percentile (ms)
+
+| Percentile | SBQ+GW+PC+2\*LR | llm-d Prefix Cache | SBQ vs llm-d  | Note                       |
+| ---------- | --------------- | ------------------ | ------------- | -------------------------- |
+| **P50**    | **282**         | 471                | **-40.1%** ✅  | SBQ leads by wide margin   |
+| **P90**    | **3,109**       | 12,865             | **-75.8%** ✅  | SBQ leads by wide margin   |
+| **P99**    | 58,523          | **20,403**         | **+186.8%** ❌ | llm-d leads by wide margin |
+
+#### Request Latency by Percentile (ms)
+
+| Percentile | SBQ+GW+PC+2\*LR | llm-d Prefix Cache | SBQ vs llm-d | Note                       |
+| ---------- | --------------- | ------------------ | ------------ | -------------------------- |
+| **P50**    | **7,147**       | 10,281             | **-30.5%** ✅ | SBQ leads by wide margin   |
+| **P90**    | **13,143**      | 27,199             | **-51.7%** ✅ | SBQ leads by wide margin   |
+| **P99**    | 64,785          | **34,519**         | **+87.7%** ❌ | llm-d leads by wide margin |
+
+#### ITL by Percentile (ms)
+
+| Percentile | SBQ+GW+PC+2\*LR | llm-d Prefix Cache | SBQ vs llm-d | Note                             |
+| ---------- | --------------- | ------------------ | ------------ | -------------------------------- |
+| **P50**    | **42.27**       | 64.53              | **-34.5%** ✅ | SBQ leads by wide margin         |
+| **P90**    | **62.52**       | 99.26              | **-37.0%** ✅ | SBQ leads by wide margin         |
+| **P99**    | **87.69**       | 104.13             | **-15.8%** ✅ | SBQ still leads (only exception) |
+
+#### All SBQ Configurations vs llm-d — P99 Summary
+
+| Configuration           | TTFT p99 (ms) | vs llm-d PC | Req Latency p99 (ms) | vs llm-d PC | ITL p99 (ms) | vs llm-d PC |
+| ----------------------- | ------------: | ----------: | -------------------: | ----------: | -----------: | ----------: |
+| **SBQ+PC+2\*LR**        |        47,252 |   +131.6% ❌ |               53,786 |    +55.8% ❌ |        97.62 |     -6.3% ✅ |
+| **SBQ+GW+SA+2\*LR**     |        59,219 |   +190.2% ❌ |               65,411 |    +89.5% ❌ |        86.38 |    -17.1% ✅ |
+| **SBQ+GW+PC+2\*LR**     |        58,523 |   +186.8% ❌ |               64,785 |    +87.7% ❌ |        87.69 |    -15.8% ✅ |
+| **llm-d Prefix Cache**  |    **20,403** |           — |           **34,519** |           — |       104.13 |           — |
+| **llm-d KVCache Aware** |        18,063 |           — |               31,892 |           — |       102.05 |           — |
+| *Kthena 2\*LR+PC*       |      *17,189* |  *-15.8%* ✅ |             *31,541* |   *-8.6%* ✅ |     *102.56* |   *-1.5%* ✅ |
+
+#### Root Cause Analysis
+
+The P99 disadvantage is an inherent consequence of SBQ's **priority scheduling design**:
+
+1. **Session priority boosting:** SBQ promotes follow-up turns of recently-active
+   sessions to the front of the queue, ensuring multi-turn conversation continuity
+   and low latency for the majority (P50/P90 benefit greatly), but simultaneously
+   **deferring new or inactive session requests**.
+2. **Graceful Wait slot holding:** GW briefly reserves a freed slot for the same
+   session's next turn, further extending queue time for non-priority requests.
+3. **Cumulative starvation:** Under C40 saturation, the small fraction of repeatedly
+   deferred requests accumulate extreme tail latencies (TTFT p99 reaching ~59s),
+   producing a "majority benefits, minority suffers" characteristic.
+
+#### Configuration Selection Guidance
+
+| Scenario                                | Recommended Configuration      | Rationale                                                     |
+| --------------------------------------- | ------------------------------ | ------------------------------------------------------------- |
+| **Best average experience / P50 / P90** | SBQ+GW+PC+2\*LR                | Leads llm-d by 20–50% across all metrics                      |
+| **Strict P99 SLA (e.g., < 30s TTFT)**   | 2\*LR+PC or 3\*KV+2\*LR+2\*GPU | P99 below or on par with llm-d                                |
+| **Balanced (no Graceful Wait)**         | SBQ+PC+2\*LR                   | P99 between the two extremes; average still better than llm-d |
+
+> **Summary:** The SBQ P99 disadvantage is not a performance regression but a **design
+> trade-off** — prioritizing GPU resources toward the requests with the highest cache hit
+> probability, achieving higher overall throughput and lower average/median latency at
+> the cost of elevated tail latency for a small fraction of requests. This makes SBQ
+> particularly suited for **user-experience-first** workloads (optimizing average response
+> speed) rather than **SLA-compliance-first** workloads (optimizing worst-case guarantees).
 
 ## B.7 High-Load Key Findings
 
@@ -634,6 +807,9 @@ Request Latency **-51.7%** (13,143 vs 27,199 ms), ITL **-37.0%** (62.52 vs 99.26
 - **Least Token (LT) dimension hurts:** 3\*PC+2\*LR+2\*GPU+2\*LT is ~6% worse than without LT.
 - **2\*LR + PC degrades under saturation** (the low-load champion) — simple dual-weight routing
   cannot differentiate load states at C40 (throughput -5.4%, TTFT +25.6% vs llm-d PC).
+- ⚠️ **SBQ P99 trade-off:** SBQ configs dominate on average/p50/p90 but have significantly
+  higher P99 TTFT/latency than llm-d — see **Section B.6.1** for detailed analysis and
+  selection guidance.
 
 ## B.8 Detailed Run Data (Concurrency 40)
 
