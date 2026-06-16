@@ -545,6 +545,17 @@ func createSessionBoostQueueConfigFromEnv() *SessionBoostQueueConfig {
 		}
 	}
 
+	if v := os.Getenv("SESSION_BOOST_BACKEND_WAITING_TOLERANCE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.BackendWaitingTolerance = n
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_BACKEND_WAITING_TOLERANCE: %q, using default %d", v, cfg.BackendWaitingTolerance)
+		}
+	}
+
+	// Inherit METRICS_SCRAPE_INTERVAL for burst window calculation
+	cfg.MetricsScrapeInterval = parseMetricsScrapeInterval()
+
 	return &cfg
 }
 
@@ -673,10 +684,15 @@ func (s *store) Enqueue(req *Request) error {
 }
 
 // makeBackendWaitingChecker returns a BackendWaitingChecker function that checks
-// whether any backend pod serving the given model has an empty waiting queue
-// (RequestWaitingNum == 0). Returns true when at least one such pod has capacity,
-// allowing the session boost queue to dequeue a request.
+// whether any backend pod serving the given model has a waiting queue length
+// within the configured tolerance (RequestWaitingNum <= BackendWaitingTolerance).
+// Returns true when at least one such pod has capacity, allowing the session
+// boost queue to dequeue a request.
 func (s *store) makeBackendWaitingChecker(modelName string) BackendWaitingChecker {
+	tolerance := float64(0)
+	if s.sessionBoostQueueConfig != nil {
+		tolerance = float64(s.sessionBoostQueueConfig.BackendWaitingTolerance)
+	}
 	return func() bool {
 		hasCapacity := false
 		podCount := 0
@@ -691,7 +707,7 @@ func (s *store) makeBackendWaitingChecker(modelName string) BackendWaitingChecke
 			}
 			podCount++
 			totalWaiting += podInfo.RequestWaitingNum
-			if podInfo.RequestWaitingNum == 0 {
+			if podInfo.RequestWaitingNum <= tolerance {
 				hasCapacity = true
 				return false // stop iterating, found a pod with capacity
 			}
@@ -702,7 +718,7 @@ func (s *store) makeBackendWaitingChecker(modelName string) BackendWaitingChecke
 			return true
 		}
 		if !hasCapacity {
-			klog.Infof("[BackendWaitingChecker] model %s: all %d pods busy, totalWaiting=%.0f", modelName, podCount, totalWaiting)
+			klog.Infof("[BackendWaitingChecker] model %s: all %d pods busy, totalWaiting=%.0f tolerance=%.0f", modelName, podCount, totalWaiting, tolerance)
 		}
 		return hasCapacity
 	}

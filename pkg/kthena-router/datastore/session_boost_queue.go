@@ -31,8 +31,9 @@ import (
 
 // BackendWaitingChecker is a function that checks whether the backend pods
 // have capacity to accept new requests. It returns true when at least one pod
-// has an empty waiting queue (i.e. RequestWaitingNum == 0), meaning the backend
-// can accept a new request without queuing.
+// has a waiting queue length within the configured tolerance (i.e.
+// RequestWaitingNum <= BackendWaitingTolerance), meaning the backend can accept
+// a new request without excessive queuing.
 type BackendWaitingChecker func() bool
 
 // SessionTracker tracks recently completed sessions for priority boosting.
@@ -141,6 +142,21 @@ type SessionBoostQueueConfig struct {
 	// Only effective when EnableWaitPromotion is true.
 	// Configured via SESSION_BOOST_MAX_WAIT env var. Defaults to 5s.
 	MaxWaitBeforePromotion time.Duration
+
+	// BackendWaitingTolerance is the maximum number of waiting requests allowed
+	// on a backend pod while still considering it as having capacity.
+	// For example, if set to 1, a pod with RequestWaitingNum <= 1 is considered
+	// to have capacity. If set to 0 (default), only pods with no waiting requests
+	// are considered to have capacity.
+	// Configured via SESSION_BOOST_BACKEND_WAITING_TOLERANCE env var. Defaults to 0.
+	BackendWaitingTolerance int
+
+	// MetricsScrapeInterval is the interval at which backend pod metrics are scraped.
+	// Used by the burst limiter to determine how long dispatched requests take to
+	// be reflected in backend metrics. Dispatches within one scrape window are
+	// counted against the burst limit to prevent over-dispatching due to stale metrics.
+	// Should match the METRICS_SCRAPE_INTERVAL env var. Defaults to 1s.
+	MetricsScrapeInterval time.Duration
 }
 
 // DefaultSessionBoostQueueConfig returns default configuration for the session boost queue.
@@ -153,6 +169,8 @@ func DefaultSessionBoostQueueConfig() SessionBoostQueueConfig {
 		InflightPerPod:           16,
 		EnableWaitPromotion:      true,
 		MaxWaitBeforePromotion:   5 * time.Second,
+		BackendWaitingTolerance:  0,
+		MetricsScrapeInterval:    1 * time.Second,
 	}
 }
 
@@ -231,6 +249,11 @@ type SessionBoostQueue struct {
 
 	// Rate-limiting for backpressure logs to avoid excessive noise
 	lastBackpressureLog atomic.Int64 // unix nano timestamp of last backpressure log
+
+	// Burst tracking across passes: dispatches within one metrics scrape window
+	// are counted to prevent over-dispatching due to stale backend metrics.
+	burstDispatched  atomic.Int64 // dispatches since last burst window reset
+	burstWindowStart atomic.Int64 // unix nano of current burst window start
 }
 
 // NewSessionBoostQueue creates a new standalone session boost queue.
@@ -510,6 +533,14 @@ func (q *SessionBoostQueue) waitGraceAndDequeue(ctx context.Context) {
 // stopping when the inflight limit is reached, backends report no capacity, or
 // the queue is empty. This avoids the one-request-per-tick bottleneck during
 // initial ramp-up and whenever spare capacity exists.
+//
+// Burst limiting (cross-pass): When BackendWaitingTolerance is configured, total
+// dispatches within one MetricsScrapeInterval window are capped at
+// podCount * (tolerance + 1). This prevents over-dispatching due to stale metrics:
+// between two metric scrapes, the backendChecker reads stale RequestWaitingNum
+// values that don't yet reflect recently dispatched requests. The burst counter
+// resets when a full scrape interval elapses OR when backendChecker returns false
+// (meaning metrics caught up and confirmed the backend is busy).
 func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 	perPod := q.config.InflightPerPod
 	if perPod <= 0 {
@@ -524,6 +555,36 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 		}
 	}
 
+	// Calculate burst limit: max dispatches within one metrics scrape window.
+	// This accounts for stale metrics between scrapes.
+	burstLimit := int64(0) // 0 means unlimited (no tolerance-based limiting)
+	tolerance := q.config.BackendWaitingTolerance
+	if tolerance >= 0 && q.backendChecker != nil {
+		pods := podCount
+		if pods <= 0 {
+			pods = 1
+		}
+		burstLimit = int64(pods) * int64(tolerance+1)
+		if burstLimit < 1 {
+			burstLimit = 1
+		}
+	}
+
+	// Reset burst counter if the metrics scrape window has elapsed,
+	// meaning fresh metrics should now be available.
+	if burstLimit > 0 {
+		scrapeWindow := q.config.MetricsScrapeInterval
+		if scrapeWindow <= 0 {
+			scrapeWindow = 1 * time.Second
+		}
+		now := time.Now().UnixNano()
+		windowStart := q.burstWindowStart.Load()
+		if windowStart == 0 || now-windowStart >= int64(scrapeWindow) {
+			q.burstDispatched.Store(0)
+			q.burstWindowStart.Store(now)
+		}
+	}
+
 	for {
 		currentInflight := q.inflightCount.Load()
 
@@ -533,7 +594,19 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 			return
 		}
 
+		// Burst limit: stop dispatching if we've exhausted the budget for this
+		// metrics scrape window. Next dispatch will be allowed after metrics refresh.
+		if burstLimit > 0 && q.burstDispatched.Load() >= burstLimit {
+			q.logBackpressureThrottled("burst limit reached, dispatched=%d burstLimit=%d scrapeWindow=%v",
+				q.burstDispatched.Load(), burstLimit, q.config.MetricsScrapeInterval)
+			return
+		}
+
 		if !q.backendChecker() {
+			// Backend reports busy — metrics have caught up with our dispatches.
+			// Reset burst counter so we get a fresh budget on next availability.
+			q.burstDispatched.Store(0)
+			q.burstWindowStart.Store(time.Now().UnixNano())
 			q.mu.RLock()
 			queueLen := q.heap.Len()
 			q.mu.RUnlock()
@@ -555,10 +628,16 @@ func (q *SessionBoostQueue) tryBackpressureDequeue(ctx context.Context) {
 		}
 
 		q.inflightCount.Add(1)
+		q.burstDispatched.Add(1)
 		releaseOnce := sync.Once{}
 		req.Release = func() {
 			releaseOnce.Do(func() {
 				q.inflightCount.Add(-1)
+				// Decrement burst counter: the backend absorbed this request,
+				// so it no longer contributes to stale-metrics over-dispatch risk.
+				if q.burstDispatched.Load() > 0 {
+					q.burstDispatched.Add(-1)
+				}
 				select {
 				case q.releaseCh <- struct{}{}:
 				default:
