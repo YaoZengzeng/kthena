@@ -435,27 +435,27 @@ each). Lower is better for latency; higher is better for throughput.
 
 ### A.3.1 Percentage Improvement — Kthena over llm-d
 
-For latency metrics, improvement = reduction; for throughput metrics, improvement = increase.
+For latency metrics: negative = lower (better). For throughput metrics: positive = higher (better).
 
 #### vs. llm-d Default
 
-| Metric                 | Kthena LR     | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena 2\*LR+PC | Kthena LR+KVCache |
-| ---------------------- | ------------- | ------------ | ------------------ | --------------- | ----------------- |
-| **Output Throughput**  | **+12.2%**    | **+20.0%**   | **+17.3%**         | **+20.2%**      | **+19.2%**        |
-| **Request Throughput** | **+12.3%**    | **+20.0%**   | **+17.3%**         | **+20.4%**      | **+19.2%**        |
-| **Request Latency**    | **-10.4%**    | **-16.2%**   | **-16.4%**         | **-15.9%**      | **-15.4%**        |
-| **ITL**                | **-11.8%**    | **-16.4%**   | **-17.0%**         | **-15.9%**      | **-17.6%**        |
-| **TTFT**               | +7.6% (worse) | **-12.3%**   | **-8.0%**          | **-14.7%**      | +12.7% (worse)    |
+| Configuration          | Request Throughput | TTFT             | ITL          | Request Latency | Output Throughput |
+| ---------------------- | ------------------ | ---------------- | ------------ | --------------- | ----------------- |
+| **Kthena LR**          | +12.3% ✅           | +7.6% ❌ (worse)  | -11.8% ✅     | -10.4% ✅        | +12.2% ✅          |
+| **Kthena LR+PC**       | +20.0% ✅           | -12.3% ✅         | -16.4% ✅     | -16.2% ✅        | +20.0% ✅          |
+| **Kthena LR+PC(W\*2)** | +17.3% ✅           | -8.0% ✅          | -17.0% ✅     | **-16.4%** ✅    | +17.3% ✅          |
+| **Kthena 2\*LR+PC** ⭐  | **+20.4%** ✅       | **-14.7%** ✅     | -15.9% ✅     | -15.9% ✅        | **+20.2%** ✅      |
+| **Kthena LR+KVCache**  | +19.2% ✅           | +12.7% ❌ (worse) | **-17.6%** ✅ | -15.4% ✅        | +19.2% ✅          |
 
 #### vs. llm-d Precise KV Cache
 
-| Metric                 | Kthena LR  | Kthena LR+PC | Kthena LR+PC(W\*2) | Kthena 2\*LR+PC | Kthena LR+KVCache |
-| ---------------------- | ---------- | ------------ | ------------------ | --------------- | ----------------- |
-| **Output Throughput**  | **+6.8%**  | **+14.2%**   | **+11.7%**         | **+14.4%**      | **+13.5%**        |
-| **Request Throughput** | **+7.0%**  | **+14.3%**   | **+11.7%**         | **+14.7%**      | **+13.6%**        |
-| **Request Latency**    | **-6.4%**  | **-12.5%**   | **-12.7%**         | **-12.2%**      | **-11.7%**        |
-| **ITL**                | **-5.9%**  | **-10.9%**   | **-11.6%**         | **-10.4%**      | **-12.2%**        |
-| **TTFT**               | **-11.2%** | **-27.6%**   | **-24.1%**         | **-29.6%**      | **-7.0%**         |
+| Configuration          | Request Throughput | TTFT         | ITL          | Request Latency | Output Throughput |
+| ---------------------- | ------------------ | ------------ | ------------ | --------------- | ----------------- |
+| **Kthena LR**          | +7.0% ✅            | -11.2% ✅     | -5.9% ✅      | -6.4% ✅         | +6.8% ✅           |
+| **Kthena LR+PC**       | +14.3% ✅           | -27.6% ✅     | -10.9% ✅     | -12.5% ✅        | +14.2% ✅          |
+| **Kthena LR+PC(W\*2)** | +11.7% ✅           | -24.1% ✅     | -11.6% ✅     | **-12.7%** ✅    | +11.7% ✅          |
+| **Kthena 2\*LR+PC** ⭐  | **+14.7%** ✅       | **-29.6%** ✅ | -10.4% ✅     | -12.2% ✅        | **+14.4%** ✅      |
+| **Kthena LR+KVCache**  | +13.6% ✅           | -7.0% ✅      | **-12.2%** ✅ | -11.7% ✅        | +13.5% ✅          |
 
 | Best Kthena metric vs llm-d Default | Improvement |
 | ----------------------------------- | ----------- |
