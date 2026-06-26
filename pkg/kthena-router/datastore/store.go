@@ -545,6 +545,14 @@ func createSessionBoostQueueConfigFromEnv() *SessionBoostQueueConfig {
 		}
 	}
 
+	if v := os.Getenv("SESSION_BOOST_WAIT_REJECT_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.WaitTimeoutReject = b
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_WAIT_REJECT_ENABLED: %q, using default %v", v, cfg.WaitTimeoutReject)
+		}
+	}
+
 	if v := os.Getenv("SESSION_BOOST_BACKEND_WAITING_TOLERANCE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.BackendWaitingTolerance = n

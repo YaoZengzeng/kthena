@@ -91,6 +91,7 @@ type Metrics struct {
 	SessionBoostQueueSize           prometheus.GaugeVec
 	SessionBoostQueueDuration       prometheus.HistogramVec
 	SessionBoostQueueCancelledTotal prometheus.CounterVec
+	SessionBoostQueueRejectedTotal  prometheus.CounterVec
 	SessionBoostQueueDequeueTotal   prometheus.CounterVec
 	SessionBoostQueueInflight       prometheus.GaugeVec
 }
@@ -264,6 +265,14 @@ func NewMetrics() *Metrics {
 			[]string{LabelModel},
 		),
 
+		SessionBoostQueueRejectedTotal: *promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "kthena_router_session_boost_queue_rejected_total",
+				Help: "Total number of requests rejected with HTTP 429 after exceeding the session boost wait timeout",
+			},
+			[]string{LabelModel},
+		),
+
 		SessionBoostQueueDequeueTotal: *promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "kthena_router_session_boost_queue_dequeue_total",
@@ -421,6 +430,11 @@ func (m *Metrics) RecordSessionBoostQueueDuration(model string, duration time.Du
 // IncSessionBoostQueueCancelled increments the session boost queue cancelled counter
 func (m *Metrics) IncSessionBoostQueueCancelled(model string) {
 	m.SessionBoostQueueCancelledTotal.WithLabelValues(model).Inc()
+}
+
+// IncSessionBoostQueueRejected increments the session boost queue rejected (429) counter
+func (m *Metrics) IncSessionBoostQueueRejected(model string) {
+	m.SessionBoostQueueRejectedTotal.WithLabelValues(model).Inc()
 }
 
 // IncSessionBoostQueueDequeue increments the session boost queue dequeue counter

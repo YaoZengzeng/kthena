@@ -547,3 +547,99 @@ func TestSessionBoostQueue_Len(t *testing.T) {
 		t.Errorf("Expected len=5, got %d", q.Len())
 	}
 }
+
+// TestSessionBoostQueue_WaitTimeoutReject verifies that, in reject mode, a
+// non-boosted request that waits longer than MaxWaitBeforePromotion is shed and
+// marked Rejected (so the caller returns HTTP 429) instead of being dispatched.
+func TestSessionBoostQueue_WaitTimeoutReject(t *testing.T) {
+	// Backend never has capacity, so the request must wait and age out.
+	checker := func() bool { return false }
+
+	cfg := SessionBoostQueueConfig{
+		SessionBoostTTL:          5 * time.Second,
+		BackpressurePollInterval: 10 * time.Millisecond,
+		InflightPerPod:           1,
+		WaitTimeoutReject:        true,
+		MaxWaitBeforePromotion:   60 * time.Millisecond,
+	}
+	q := NewSessionBoostQueue(nil, cfg, checker)
+	q.SetPodCounter(func() int { return 1 })
+	defer q.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Run(ctx)
+
+	req := &Request{
+		ReqID:       "req-reject",
+		UserID:      "user-A",
+		ModelName:   "model-1",
+		RequestTime: time.Now(),
+		NotifyChan:  make(chan struct{}),
+	}
+	if err := q.PushRequest(req); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	select {
+	case <-req.NotifyChan:
+		if !req.Rejected {
+			t.Error("Expected request to be marked Rejected after wait timeout")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: request should have been rejected after wait timeout")
+	}
+}
+
+// TestSessionBoostQueue_WaitTimeoutReject_BoostedNotRejected verifies that
+// boosted requests are never shed by the reject sweeper.
+func TestSessionBoostQueue_WaitTimeoutReject_BoostedNotRejected(t *testing.T) {
+	checker := func() bool { return false }
+
+	cfg := SessionBoostQueueConfig{
+		SessionBoostTTL:          5 * time.Second,
+		BackpressurePollInterval: 10 * time.Millisecond,
+		InflightPerPod:           1,
+		WaitTimeoutReject:        true,
+		MaxWaitBeforePromotion:   60 * time.Millisecond,
+	}
+	q := NewSessionBoostQueue(nil, cfg, checker)
+	q.SetPodCounter(func() int { return 1 })
+	defer q.Close()
+
+	q.MarkSessionCompleted("session-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Run(ctx)
+
+	boosted := &Request{
+		ReqID:       "req-boosted",
+		UserID:      "user-A",
+		ModelName:   "model-1",
+		SessionID:   "session-1",
+		RequestTime: time.Now(),
+		NotifyChan:  make(chan struct{}),
+	}
+	if err := q.PushRequest(boosted); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+	if !boosted.SessionBoost {
+		t.Fatal("Expected request to be boosted")
+	}
+
+	// Wait beyond MaxWaitBeforePromotion; the boosted request must remain queued
+	// (not rejected) because the backend never has capacity.
+	select {
+	case <-boosted.NotifyChan:
+		t.Fatalf("Boosted request should not be rejected or dispatched (rejected=%v)", boosted.Rejected)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: still queued, not rejected.
+	}
+	if boosted.Rejected {
+		t.Error("Boosted request must never be rejected by the wait-timeout sweeper")
+	}
+	if q.Len() != 1 {
+		t.Errorf("Expected boosted request to remain queued, len=%d", q.Len())
+	}
+}

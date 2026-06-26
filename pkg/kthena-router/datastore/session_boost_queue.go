@@ -141,7 +141,20 @@ type SessionBoostQueueConfig struct {
 	// first-turn requests under high multi-turn load.
 	// Only effective when EnableWaitPromotion is true.
 	// Configured via SESSION_BOOST_MAX_WAIT env var. Defaults to 5s.
+	//
+	// When WaitTimeoutReject is enabled, this same threshold determines how long a
+	// non-boosted request may wait before it is rejected with HTTP 429.
 	MaxWaitBeforePromotion time.Duration
+
+	// WaitTimeoutReject selects the rejection mode for the wait-timeout behavior.
+	// When true, a non-boosted request that waits at least MaxWaitBeforePromotion
+	// is removed from the queue and the caller returns HTTP 429 (Too Many Requests)
+	// instead of being promoted to boosted priority. This provides load shedding
+	// under sustained overload. It is mutually exclusive with wait promotion: when
+	// enabled, aging promotion is disabled and MaxWaitBeforePromotion is reused as
+	// the reject threshold.
+	// Configured via SESSION_BOOST_WAIT_REJECT_ENABLED env var. Defaults to false.
+	WaitTimeoutReject bool
 
 	// BackendWaitingTolerance is the maximum number of waiting requests allowed
 	// on a backend pod while still considering it as having capacity.
@@ -169,6 +182,7 @@ func DefaultSessionBoostQueueConfig() SessionBoostQueueConfig {
 		InflightPerPod:           16,
 		EnableWaitPromotion:      true,
 		MaxWaitBeforePromotion:   5 * time.Second,
+		WaitTimeoutReject:        false,
 		BackendWaitingTolerance:  0,
 		MetricsScrapeInterval:    1 * time.Second,
 	}
@@ -262,7 +276,9 @@ func NewSessionBoostQueue(metricsInstance *metrics.Metrics, cfg SessionBoostQueu
 		metricsInstance = metrics.DefaultMetrics
 	}
 	maxWait := cfg.MaxWaitBeforePromotion
-	if !cfg.EnableWaitPromotion {
+	if !cfg.EnableWaitPromotion || cfg.WaitTimeoutReject {
+		// In reject mode, long-waiting requests are shed rather than promoted, so
+		// the heap must not reorder them as boosted. Disable aging promotion.
 		maxWait = 0
 	}
 	q := &SessionBoostQueue{
@@ -360,12 +376,98 @@ func (q *SessionBoostQueue) Run(ctx context.Context) {
 	// Start session tracker cleanup goroutine
 	go q.runSessionCleanup(ctx)
 
+	// Start the wait-timeout reject sweeper when reject mode is enabled. It sheds
+	// requests that have waited past MaxWaitBeforePromotion with HTTP 429,
+	// independent of which dequeue mode is in use.
+	if q.config.WaitTimeoutReject && q.config.MaxWaitBeforePromotion > 0 {
+		go q.runRejectSweeper(ctx)
+	}
+
 	if q.backendChecker != nil {
 		q.runBackpressureMode(ctx)
 		return
 	}
 	// Without backpressure checker, dequeue immediately (no rate limiting).
 	q.runDirectMode(ctx)
+}
+
+// runRejectSweeper periodically rejects non-boosted requests that have waited
+// longer than MaxWaitBeforePromotion. Only started when WaitTimeoutReject is
+// enabled. The sweep interval follows BackpressurePollInterval so rejection
+// reacts promptly to the configured wait threshold.
+func (q *SessionBoostQueue) runRejectSweeper(ctx context.Context) {
+	interval := q.config.BackpressurePollInterval
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	klog.V(4).Infof("[SessionBoostQueue] starting wait-timeout reject sweeper, interval=%v, maxWait=%v",
+		interval, q.config.MaxWaitBeforePromotion)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-q.stopCh:
+			return
+		case <-ticker.C:
+			q.rejectAgedRequests()
+		}
+	}
+}
+
+// rejectAgedRequests removes non-boosted requests that have waited at least
+// MaxWaitBeforePromotion and marks them rejected so the caller returns HTTP 429.
+// Boosted requests are never rejected here. This is the load-shedding counterpart
+// of aging promotion: rather than promoting a long-waiting request, the queue
+// sheds it. No-op unless WaitTimeoutReject is enabled.
+func (q *SessionBoostQueue) rejectAgedRequests() {
+	if !q.config.WaitTimeoutReject || q.config.MaxWaitBeforePromotion <= 0 {
+		return
+	}
+	maxWait := q.config.MaxWaitBeforePromotion
+
+	q.mu.Lock()
+	if q.heap.Len() == 0 {
+		q.mu.Unlock()
+		return
+	}
+	survivors := make([]*Request, 0, q.heap.Len())
+	var rejected []*Request
+	for _, it := range q.heap.items {
+		if it == nil {
+			continue
+		}
+		if !it.SessionBoost && time.Since(it.RequestTime) >= maxWait {
+			rejected = append(rejected, it)
+		} else {
+			survivors = append(survivors, it)
+		}
+	}
+	if len(rejected) == 0 {
+		q.mu.Unlock()
+		return
+	}
+	q.heap.items = survivors
+	heap.Init(&q.heap)
+	q.mu.Unlock()
+
+	// Notify rejected callers outside the lock. The requests are no longer in the
+	// heap, so no dequeue path can observe them, making the channel close safe.
+	for _, req := range rejected {
+		req.Rejected = true
+		if q.metrics != nil {
+			q.metrics.DecSessionBoostQueueSize(req.ModelName)
+			q.metrics.RecordSessionBoostQueueDuration(req.ModelName, time.Since(req.RequestTime))
+			q.metrics.IncSessionBoostQueueRejected(req.ModelName)
+		}
+		klog.V(2).Infof("[SessionBoostQueue] *** REJECTED (429) *** reqID=%s user=%s model=%s sessionID=%s reason=wait_timeout waited=%v maxWait=%v",
+			req.ReqID, req.UserID, req.ModelName, req.SessionID,
+			time.Since(req.RequestTime).Round(time.Millisecond), maxWait)
+		if req.NotifyChan != nil {
+			close(req.NotifyChan)
+		}
+	}
 }
 
 // runDirectMode dequeues requests as fast as they arrive with no rate limiting.

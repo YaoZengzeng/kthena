@@ -99,6 +99,7 @@ type Request struct {
 	NotifyChan   chan struct{}
 	CancelCh     <-chan struct{} // Request-scoped cancellation signal
 	Release      func()          // Set by the queue when a permit is acquired
+	Rejected     bool            // Set by the queue when the request is shed (e.g. wait-timeout 429) before NotifyChan is closed
 }
 
 // RequestPriorityQueue implements the heap.Interface

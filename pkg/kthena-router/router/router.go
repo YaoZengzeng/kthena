@@ -1302,6 +1302,12 @@ func (r *Router) handleSessionBoostScheduling(c *gin.Context, modelRequest Model
 
 	select {
 	case <-queueReq.NotifyChan:
+		if queueReq.Rejected {
+			klog.V(2).Infof("[SessionBoost] request rejected (429) after wait timeout: reqID=%s sessionID=%s model=%s waitTime=%v",
+				requestID, sessionID, modelName, time.Since(queueReq.RequestTime))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, "Too many requests: backend overloaded, please retry later")
+			return fmt.Errorf("request rejected with 429 after session boost wait timeout")
+		}
 		if queueReq.Release != nil {
 			defer queueReq.Release()
 		}
