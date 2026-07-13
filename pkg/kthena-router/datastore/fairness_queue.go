@@ -73,6 +73,15 @@ type FairnessQueueConfig struct {
 	// default of defaultSessionBoostMaxSessions is used.
 	SessionBoostMaxSessions int
 
+	// SessionBoostMaxOvertakes bounds how many times a queued boosted request may be
+	// overtaken by newer same-priority boosted requests (sessions that completed
+	// more recently) before it is "aged": once a boosted request has been overtaken
+	// this many times it ranks ahead of the completion-time lane and can no longer
+	// be pushed back, so sustained boosted traffic cannot starve it into hitting
+	// SESSION_BOOST_TIMEOUT. When <= 0, a default of defaultSessionBoostMaxOvertakes
+	// is used. Only meaningful when SessionBoostEnabled is true.
+	SessionBoostMaxOvertakes int
+
 	// SessionBoostGracePeriod is the duration to wait after a release before
 	// dequeuing the next request in backpressure mode. This gives the same session
 	// time to submit a follow-up request that benefits from prefix cache.
@@ -96,6 +105,11 @@ const defaultSessionBoostInflightPerPod = 16
 // (<= 0). Each entry is tiny (a session ID), so the default is generous.
 const defaultSessionBoostMaxSessions = 4096
 
+// defaultSessionBoostMaxOvertakes is the bound on how many times a queued boosted
+// request may be overtaken by newer completions before it is aged and forced ahead
+// of the completion-time lane. Used when SessionBoostMaxOvertakes is not set (<= 0).
+const defaultSessionBoostMaxOvertakes = 16
+
 // defaultSessionBoostHeader is the HTTP header used to identify conversation
 // sessions when SESSION_BOOST_HEADER is not set.
 const defaultSessionBoostHeader = "X-Session-ID"
@@ -112,6 +126,7 @@ func DefaultFairnessQueueConfig() FairnessQueueConfig {
 		SessionBoostEnabled:       false,
 		SessionIDHeader:           defaultSessionBoostHeader,
 		SessionBoostMaxSessions:   defaultSessionBoostMaxSessions,
+		SessionBoostMaxOvertakes:  defaultSessionBoostMaxOvertakes,
 		SessionBoostGracePeriod:   0,
 		InflightPerPod:            defaultSessionBoostInflightPerPod,
 	}
@@ -164,6 +179,12 @@ type Request struct {
 	admitMu   sync.Mutex
 	admitted  bool // admission committed: Release is set and about to be signalled
 	abandoned bool // caller gave up before admission; the loop must not admit
+
+	// Bounded-overtaking bookkeeping for session-boost ordering. Both fields are
+	// guarded by the queue lock (pq.mu), which is held whenever they are read
+	// (during heap comparisons in Less) or written (in PushRequest).
+	overtakenCount int  // times a newer completion has jumped ahead of this request
+	boostAged      bool // overtaken >= SessionBoostMaxOvertakes; ranks ahead of the completion-time lane
 }
 
 // commitAdmission runs fn under the request lock, but only if the caller has not
@@ -280,12 +301,24 @@ func (pq *RequestPriorityQueue) Less(i, j int) bool {
 	// Session-boost mode: boosted requests outrank others. Among boosted requests,
 	// the session whose previous turn completed most recently wins, because its
 	// prefix cache is the most likely to still be warm on the backend; ties are
-	// broken FIFO by arrival time. Non-boosted requests keep FIFO ordering.
+	// broken FIFO by arrival time. To keep this ordering from starving an older
+	// boosted request under a steady stream of newer completions, a request that
+	// has been overtaken SessionBoostMaxOvertakes times is marked "aged" and ranks
+	// ahead of the completion-time lane. Non-boosted requests keep FIFO ordering.
 	if pq.sessionBoost {
 		if pq.heap[i].SessionBoost != pq.heap[j].SessionBoost {
 			return pq.heap[i].SessionBoost
 		}
 		if pq.heap[i].SessionBoost {
+			// Aged requests (overtaken past the bound) rank ahead of the
+			// completion-time lane so newer traffic can no longer push them back.
+			if pq.heap[i].boostAged != pq.heap[j].boostAged {
+				return pq.heap[i].boostAged
+			}
+			if pq.heap[i].boostAged {
+				// Both aged: oldest arrival first so the longest waiter runs next.
+				return pq.heap[i].RequestTime.Before(pq.heap[j].RequestTime)
+			}
 			if !pq.heap[i].LastTurnCompletedAt.Equal(pq.heap[j].LastTurnCompletedAt) {
 				return pq.heap[i].LastTurnCompletedAt.After(pq.heap[j].LastTurnCompletedAt)
 			}
@@ -339,7 +372,37 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 		}
 	}
 
-	heap.Push(pq, r)
+	if r.SessionBoost {
+		// Bounded overtaking: this newer boosted request will jump ahead of every
+		// queued boosted request whose previous turn completed earlier. Record that
+		// as an overtake for each of them; once a request has been overtaken
+		// SessionBoostMaxOvertakes times it is marked aged and can no longer be
+		// pushed back, so sustained newer traffic cannot starve it. Mutating the
+		// ordering keys of queued items requires re-establishing the heap invariant,
+		// so rebuild via heap.Init instead of a plain heap.Push in that case.
+		maxOvertakes := pq.config.SessionBoostMaxOvertakes
+		if maxOvertakes <= 0 {
+			maxOvertakes = defaultSessionBoostMaxOvertakes
+		}
+		mutated := false
+		for _, q := range pq.heap {
+			if q.SessionBoost && !q.boostAged && q.LastTurnCompletedAt.Before(r.LastTurnCompletedAt) {
+				q.overtakenCount++
+				if q.overtakenCount >= maxOvertakes {
+					q.boostAged = true
+				}
+				mutated = true
+			}
+		}
+		if mutated {
+			pq.heap = append(pq.heap, r)
+			heap.Init(pq)
+		} else {
+			heap.Push(pq, r)
+		}
+	} else {
+		heap.Push(pq, r)
+	}
 
 	// Update queue size metrics
 	pq.metricIncSize(r.ModelName, r.UserID)

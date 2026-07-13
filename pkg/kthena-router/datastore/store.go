@@ -511,6 +511,14 @@ func applySessionBoostConfigFromEnv(cfg *FairnessQueueConfig) {
 		}
 	}
 
+	if v := os.Getenv("SESSION_BOOST_MAX_OVERTAKES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SessionBoostMaxOvertakes = n
+		} else {
+			klog.Warningf("Invalid SESSION_BOOST_MAX_OVERTAKES: %q, using default %d", v, cfg.SessionBoostMaxOvertakes)
+		}
+	}
+
 	if v := os.Getenv("SESSION_BOOST_INFLIGHT_PER_POD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.InflightPerPod = n

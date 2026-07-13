@@ -227,6 +227,7 @@ The net effect is a strict precedence: **grace timing → inflight gate → back
 | `ENABLE_SESSION_BOOST`           | `false`        | Enable the session-boost scheduling strategy (mutually exclusive with `ENABLE_FAIRNESS_SCHEDULING`)                                                                                                                                                                      |
 | `SESSION_BOOST_HEADER`           | `X-Session-ID` | HTTP header used to identify conversation sessions                                                                                                                                                                                                                       |
 | `SESSION_BOOST_MAX_SESSIONS`     | `4096`         | Maximum number of recently-completed sessions kept warm for boosting. Bounds an LRU cache; the least-recently-used session is evicted when exceeded. Sized by session count, not time                                                                                    |
+| `SESSION_BOOST_MAX_OVERTAKES`    | `16`           | Bounds how many times a queued boosted request may be overtaken by newer completions before it is "aged" and ranks ahead of the completion-time lane. Prevents sustained boosted traffic from starving an older request into hitting `SESSION_BOOST_TIMEOUT`             |
 | `SESSION_BOOST_GRACE_PERIOD`     | `0`            | Wait time after release for same-session follow-up. Disabled by default; enable only when you understand the latency trade-off                                                                                                                                           |
 | `SESSION_BOOST_INFLIGHT_PER_POD` | `16`           | Inflight requests admitted per backend pod; total inflight = perPod x backend pod count. Size it from the estimated per-pod concurrency (e.g. vLLM's --max-num-seqs)                                                                                                     |
 | `SESSION_BOOST_TIMEOUT`          | `30s`          | Maximum time a request may wait in the queue before it is rejected with HTTP 504. Enabled by default; set a non-positive duration (e.g. `0s`) to disable it. It is the only server-side queue-wait bound in session-boost mode (`FAIRNESS_QUEUE_TIMEOUT` does not apply) |
@@ -269,10 +270,24 @@ type RequestPriorityQueue struct {
 
 // Session-boost ordering (RequestPriorityQueue.Less when sessionBoost == true):
 // 1. SessionBoost=true comes before SessionBoost=false
-// 2. Within boosted requests: the session whose previous turn completed most
-//    recently comes first (warmest prefix cache); ties broken FIFO by RequestTime
-// 3. Within non-boosted requests: earlier RequestTime comes first (FIFO)
+// 2. Within boosted requests: an "aged" request (overtaken past the bound) comes
+//    before non-aged ones; among aged, earlier RequestTime first (FIFO)
+// 3. Within non-aged boosted requests: the session whose previous turn completed
+//    most recently comes first (warmest prefix cache); ties broken FIFO by
+//    RequestTime
+// 4. Within non-boosted requests: earlier RequestTime comes first (FIFO)
 ```
+
+> **Bounded overtaking (anti-starvation).** Ordering boosted requests by completion
+> time means an older queued request keeps the timestamp captured when it enqueued,
+> while every later-completing session gets a newer one and jumps ahead. Under
+> sustained boosted traffic that older request could be overtaken indefinitely and
+> hit `SESSION_BOOST_TIMEOUT` instead of ever running. To bound this, each queued
+> boosted request counts how many times a newer completion has jumped ahead of it;
+> once that count reaches `SESSION_BOOST_MAX_OVERTAKES` the request is marked *aged*
+> and ranks ahead of the completion-time lane, so it can no longer be pushed back.
+> This caps the number of times any boosted request can be overtaken while still
+> preferring cache-warm sessions in the common case.
 
 #### Session Identification
 

@@ -18,6 +18,7 @@ package datastore
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -294,6 +295,75 @@ func TestSessionBoostQueue_OrderedByCompletionTime(t *testing.T) {
 		if got.UserID != expected {
 			t.Errorf("Position %d: expected %s (by completion time), got %s", i, expected, got.UserID)
 		}
+	}
+}
+
+// TestSessionBoostQueue_BoundedOvertaking verifies that completion-time ordering
+// cannot starve an older boosted request. A steady stream of newer completions is
+// injected—one before every dequeue—so a naive newest-first ordering would push
+// the original request back forever until it timed out. With bounded overtaking
+// the victim must be admitted no later than SessionBoostMaxOvertakes dequeues.
+func TestSessionBoostQueue_BoundedOvertaking(t *testing.T) {
+	cfg := sessionBoostConfig()
+	cfg.SessionBoostMaxOvertakes = 3
+	q := newSessionBoostQueue(cfg, nil)
+	defer q.Close()
+
+	// Controllable clock so each completion gets a strictly newer timestamp,
+	// making every injected request rank ahead of the victim under plain
+	// completion-time ordering.
+	st := q.GetSessionTracker()
+	base := time.Now()
+	tick := 0
+	markCompletedNewer := func(sessionID string) {
+		tick++
+		ts := base.Add(time.Duration(tick) * time.Second)
+		st.now = func() time.Time { return ts }
+		q.MarkSessionRequestCompleted(sessionID)
+	}
+
+	// The victim: an older boosted request whose session completed first.
+	markCompletedNewer("conv-victim")
+	victim := &Request{UserID: "victim", ModelName: "m", SessionID: "conv-victim", RequestTime: base}
+	if err := q.PushRequest(victim); err != nil {
+		t.Fatalf("PushRequest failed: %v", err)
+	}
+
+	// Before each dequeue, a newer session completes and enqueues a boosted
+	// follow-up that would outrank the victim by completion time. Without a bound
+	// the victim would be overtaken indefinitely.
+	dequeuedAt := -1
+	const rounds = 10
+	for i := 0; i < rounds; i++ {
+		sid := fmt.Sprintf("conv-new-%d", i)
+		markCompletedNewer(sid)
+		newer := &Request{
+			UserID:      sid,
+			ModelName:   "m",
+			SessionID:   sid,
+			RequestTime: base.Add(time.Duration(i+1) * time.Millisecond),
+		}
+		if err := q.PushRequest(newer); err != nil {
+			t.Fatalf("PushRequest %d failed: %v", i, err)
+		}
+
+		got, err := q.popWhenAvailable(context.Background())
+		if err != nil {
+			t.Fatalf("Pop %d failed: %v", i, err)
+		}
+		if got.UserID == "victim" {
+			dequeuedAt = i
+			break
+		}
+	}
+
+	if dequeuedAt < 0 {
+		t.Fatalf("victim was starved: not dequeued within %d rounds of newer completions", rounds)
+	}
+	// The victim can be overtaken at most SessionBoostMaxOvertakes times, so it must
+	// be admitted no later than that many dequeues (index <= max).
+	if dequeuedAt > cfg.SessionBoostMaxOvertakes {
+		t.Errorf("victim dequeued after %d overtakes, want <= %d", dequeuedAt, cfg.SessionBoostMaxOvertakes)
 	}
 }
 
