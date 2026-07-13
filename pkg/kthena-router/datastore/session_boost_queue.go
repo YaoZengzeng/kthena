@@ -294,6 +294,7 @@ func (pq *RequestPriorityQueue) drainCancelledLocked() int {
 			pq.metricDecSize(req.ModelName, req.UserID)
 			pq.metricRecordDuration(req.ModelName, req.UserID, time.Since(req.RequestTime))
 			pq.metricIncCancelled(req.ModelName, req.UserID)
+			req.heapIndex = -1 // no longer in the heap; lets boostArrivals skip it
 			continue
 		}
 		kept = append(kept, req)
@@ -307,6 +308,12 @@ func (pq *RequestPriorityQueue) drainCancelledLocked() int {
 		pq.heap[i] = nil
 	}
 	pq.heap = kept
+	// Reset positions before heap.Init: compaction shifted elements, and heap.Init
+	// only updates indices for elements it moves, so stale heapIndex values must be
+	// corrected here to keep heap.Fix targeting the right slots.
+	for idx, req := range pq.heap {
+		req.heapIndex = idx
+	}
 	heap.Init(pq)
 	return drained
 }

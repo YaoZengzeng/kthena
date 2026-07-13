@@ -180,11 +180,18 @@ type Request struct {
 	admitted  bool // admission committed: Release is set and about to be signalled
 	abandoned bool // caller gave up before admission; the loop must not admit
 
-	// Bounded-overtaking bookkeeping for session-boost ordering. Both fields are
-	// guarded by the queue lock (pq.mu), which is held whenever they are read
-	// (during heap comparisons in Less) or written (in PushRequest).
-	overtakenCount int  // times a newer completion has jumped ahead of this request
-	boostAged      bool // overtaken >= SessionBoostMaxOvertakes; ranks ahead of the completion-time lane
+	// Bounded-overtaking bookkeeping for session-boost ordering. All three fields
+	// are guarded by the queue lock (pq.mu). heapIndex is the request's current
+	// position in the heap slice (maintained by Swap/Push/Pop) so it can be
+	// promoted in place with heap.Fix; it is -1 when the request is not in the
+	// heap. boostEnqueueAdmits snapshots pq.boostAdmitCount at enqueue, so
+	// pq.boostAdmitCount-boostEnqueueAdmits is how many boosted requests have been
+	// served ahead of this one (i.e. how many times it has been overtaken).
+	// boostForced is set once that count reaches the bound; it makes the request
+	// rank ahead of the completion-time lane and is never cleared.
+	heapIndex          int
+	boostEnqueueAdmits int64
+	boostForced        bool
 }
 
 // commitAdmission runs fn under the request lock, but only if the caller has not
@@ -252,6 +259,15 @@ type RequestPriorityQueue struct {
 	podCounter     PodCounter            // Optional; counts backend pods for inflight scaling
 	inflightCount  atomic.Int64          // In-flight requests in session-boost mode
 	releaseCh      chan struct{}         // Signals a permit release in session-boost mode
+
+	// Bounded-overtaking state (session-boost mode), guarded by mu. boostAdmitCount
+	// is a monotonic count of boosted requests dequeued so far; each request
+	// snapshots it at enqueue so the difference gives how many times it has been
+	// overtaken. boostArrivals holds queued boosted requests in arrival order so the
+	// oldest still-waiting one can be found in amortized O(1) (stale entries are
+	// skipped lazily), avoiding any per-enqueue scan of the heap.
+	boostAdmitCount int64
+	boostArrivals   []*Request
 }
 
 var _ heap.Interface = &RequestPriorityQueue{}
@@ -303,20 +319,20 @@ func (pq *RequestPriorityQueue) Less(i, j int) bool {
 	// prefix cache is the most likely to still be warm on the backend; ties are
 	// broken FIFO by arrival time. To keep this ordering from starving an older
 	// boosted request under a steady stream of newer completions, a request that
-	// has been overtaken SessionBoostMaxOvertakes times is marked "aged" and ranks
+	// has been overtaken SessionBoostMaxOvertakes times is marked "forced" and ranks
 	// ahead of the completion-time lane. Non-boosted requests keep FIFO ordering.
 	if pq.sessionBoost {
 		if pq.heap[i].SessionBoost != pq.heap[j].SessionBoost {
 			return pq.heap[i].SessionBoost
 		}
 		if pq.heap[i].SessionBoost {
-			// Aged requests (overtaken past the bound) rank ahead of the
+			// Forced requests (overtaken past the bound) rank ahead of the
 			// completion-time lane so newer traffic can no longer push them back.
-			if pq.heap[i].boostAged != pq.heap[j].boostAged {
-				return pq.heap[i].boostAged
+			if pq.heap[i].boostForced != pq.heap[j].boostForced {
+				return pq.heap[i].boostForced
 			}
-			if pq.heap[i].boostAged {
-				// Both aged: oldest arrival first so the longest waiter runs next.
+			if pq.heap[i].boostForced {
+				// Both forced: oldest arrival first so the longest waiter runs next.
 				return pq.heap[i].RequestTime.Before(pq.heap[j].RequestTime)
 			}
 			if !pq.heap[i].LastTurnCompletedAt.Equal(pq.heap[j].LastTurnCompletedAt) {
@@ -340,10 +356,13 @@ func (pq *RequestPriorityQueue) Less(i, j int) bool {
 
 func (pq *RequestPriorityQueue) Swap(i, j int) {
 	pq.heap[i], pq.heap[j] = pq.heap[j], pq.heap[i]
+	pq.heap[i].heapIndex = i
+	pq.heap[j].heapIndex = j
 }
 
 func (pq *RequestPriorityQueue) Push(x interface{}) {
 	item := x.(*Request)
+	item.heapIndex = len(pq.heap)
 	pq.heap = append(pq.heap, item)
 }
 
@@ -354,6 +373,7 @@ func (pq *RequestPriorityQueue) Pop() interface{} {
 	}
 	item := pq.heap[n-1]
 	pq.heap[n-1] = nil
+	item.heapIndex = -1
 	pq.heap = pq.heap[0 : n-1]
 	return item
 }
@@ -373,36 +393,17 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 	}
 
 	if r.SessionBoost {
-		// Bounded overtaking: this newer boosted request will jump ahead of every
-		// queued boosted request whose previous turn completed earlier. Record that
-		// as an overtake for each of them; once a request has been overtaken
-		// SessionBoostMaxOvertakes times it is marked aged and can no longer be
-		// pushed back, so sustained newer traffic cannot starve it. Mutating the
-		// ordering keys of queued items requires re-establishing the heap invariant,
-		// so rebuild via heap.Init instead of a plain heap.Push in that case.
-		maxOvertakes := pq.config.SessionBoostMaxOvertakes
-		if maxOvertakes <= 0 {
-			maxOvertakes = defaultSessionBoostMaxOvertakes
-		}
-		mutated := false
-		for _, q := range pq.heap {
-			if q.SessionBoost && !q.boostAged && q.LastTurnCompletedAt.Before(r.LastTurnCompletedAt) {
-				q.overtakenCount++
-				if q.overtakenCount >= maxOvertakes {
-					q.boostAged = true
-				}
-				mutated = true
-			}
-		}
-		if mutated {
-			pq.heap = append(pq.heap, r)
-			heap.Init(pq)
-		} else {
-			heap.Push(pq, r)
-		}
-	} else {
-		heap.Push(pq, r)
+		// Bounded overtaking: snapshot how many boosted requests have already been
+		// admitted. Later, pq.boostAdmitCount-boostEnqueueAdmits is exactly how many
+		// boosted requests were served ahead of this one; when that reaches the
+		// bound the dequeue loop forces this request (see promoteStarvedBoostLocked).
+		// This is O(1) here, so enqueue stays O(log n) via heap.Push instead of the
+		// previous per-enqueue heap scan. boostArrivals keeps arrival order so the
+		// oldest waiter can be found cheaply.
+		r.boostEnqueueAdmits = pq.boostAdmitCount
+		pq.boostArrivals = append(pq.boostArrivals, r)
 	}
+	heap.Push(pq, r)
 
 	// Update queue size metrics
 	pq.metricIncSize(r.ModelName, r.UserID)
@@ -420,6 +421,44 @@ func (pq *RequestPriorityQueue) PushRequest(r *Request) error {
 	return nil
 }
 
+// oldestWaitingBoostLocked returns the boosted request that has been waiting in the
+// queue the longest, or nil if none. It lazily discards entries from the front of
+// boostArrivals that have already left the heap (admitted, forced out, or drained
+// as cancelled), so amortized cost is O(1). Caller must hold pq.mu.
+func (pq *RequestPriorityQueue) oldestWaitingBoostLocked() *Request {
+	for len(pq.boostArrivals) > 0 {
+		r := pq.boostArrivals[0]
+		if r.heapIndex >= 0 && !r.isCancelled() {
+			return r
+		}
+		pq.boostArrivals[0] = nil
+		pq.boostArrivals = pq.boostArrivals[1:]
+	}
+	return nil
+}
+
+// promoteStarvedBoostLocked enforces the bounded-overtaking guarantee. If the
+// longest-waiting boosted request has been overtaken by at least
+// SessionBoostMaxOvertakes newer boosted admissions, it is marked forced and moved
+// into place with heap.Fix (O(log n)) so the next pop returns it. Only the oldest
+// waiter needs checking: boostEnqueueAdmits is monotonic with arrival order, so the
+// oldest has been overtaken the most and crosses the bound first. Caller must hold
+// pq.mu.
+func (pq *RequestPriorityQueue) promoteStarvedBoostLocked() {
+	oldest := pq.oldestWaitingBoostLocked()
+	if oldest == nil || oldest.boostForced {
+		return
+	}
+	maxOvertakes := pq.config.SessionBoostMaxOvertakes
+	if maxOvertakes <= 0 {
+		maxOvertakes = defaultSessionBoostMaxOvertakes
+	}
+	if pq.boostAdmitCount-oldest.boostEnqueueAdmits >= int64(maxOvertakes) {
+		oldest.boostForced = true
+		heap.Fix(pq, oldest.heapIndex)
+	}
+}
+
 // popWhenAvailable blocks until an item is available or the context is done, then pops one item.
 // Cancelled/timed-out requests are skipped automatically.
 func (pq *RequestPriorityQueue) popWhenAvailable(ctx context.Context) (*Request, error) {
@@ -427,6 +466,12 @@ func (pq *RequestPriorityQueue) popWhenAvailable(ctx context.Context) (*Request,
 	for {
 		pq.mu.Lock()
 		if len(pq.heap) > 0 {
+			// Anti-starvation: before picking the heap head, promote the
+			// longest-waiting boosted request if it has been overtaken too many
+			// times, so completion-time ordering cannot starve it.
+			if pq.sessionBoost {
+				pq.promoteStarvedBoostLocked()
+			}
 			req := heap.Pop(pq).(*Request)
 
 			// Skip cancelled/timed-out requests
@@ -479,6 +524,12 @@ func (pq *RequestPriorityQueue) popWhenAvailable(ctx context.Context) (*Request,
 			pq.metricDecSize(req.ModelName, req.UserID)
 			pq.metricRecordDuration(req.ModelName, req.UserID, time.Since(req.RequestTime))
 			pq.metricIncDequeue(req.ModelName, req.UserID)
+
+			// Count this boosted dequeue so the overtake bound advances for every
+			// still-waiting boosted request (see promoteStarvedBoostLocked).
+			if pq.sessionBoost && req.SessionBoost {
+				pq.boostAdmitCount++
+			}
 
 			pq.mu.Unlock()
 			return req, nil
