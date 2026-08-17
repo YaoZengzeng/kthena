@@ -1758,7 +1758,8 @@ func (s *store) getPodWorkloadPort(podInfo *PodInfo) uint32 {
 		if msValue, ok := s.modelServer.Load(msName); ok {
 			ms := msValue.(*modelServer).getModelServer()
 			if ms != nil && ms.Spec.WorkloadPort.Port > 0 {
-				return uint32(ms.Spec.WorkloadPort.Port)
+				// Statically configured endpoints may override the workload port.
+				return uint32(utils.EndpointPort(podInfo.GetPod(), ms.Spec.WorkloadPort.Port))
 			}
 		}
 	}

@@ -77,6 +77,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/router-routing',
             'user-guide/config-router',
+            'user-guide/standalone-router',
             'user-guide/kvcache-aware',
             'user-guide/fairness-scheduling',
             'user-guide/session-boost',
