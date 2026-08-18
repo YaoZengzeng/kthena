@@ -17,7 +17,10 @@ limitations under the License.
 package utils
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -44,13 +47,22 @@ func GetNamespaceName(obj metav1.Object) types.NamespacedName {
 
 func ParsePrompt(body map[string]interface{}) (*common.ChatMessage, error) {
 	if prompt, ok := body["prompt"]; ok {
-		promptStr, ok := prompt.(string)
-		if !ok {
-			return nil, fmt.Errorf("prompt is not a string")
+		switch value := prompt.(type) {
+		case string:
+			return &common.ChatMessage{
+				Text: value,
+			}, nil
+		case []interface{}:
+			tokenIDs, err := parseTokenIDs(value)
+			if err != nil {
+				return nil, err
+			}
+			return &common.ChatMessage{
+				TokenIDs: tokenIDs,
+			}, nil
+		default:
+			return nil, fmt.Errorf("prompt is neither a string nor a list of token ids")
 		}
-		return &common.ChatMessage{
-			Text: promptStr,
-		}, nil
 	}
 
 	if messages, ok := body["messages"]; ok {
@@ -98,6 +110,38 @@ func ParsePrompt(body map[string]interface{}) (*common.ChatMessage, error) {
 	}
 
 	return nil, fmt.Errorf("prompt or messages not found in request body")
+}
+
+// parseTokenIDs converts a completion prompt given as a list of token ids into
+// the token ids themselves. Only a flat list of token ids is supported, which
+// is the shape used by rollout engines; batched prompts are rejected.
+func parseTokenIDs(values []interface{}) ([]uint32, error) {
+	tokenIDs := make([]uint32, 0, len(values))
+	for _, value := range values {
+		var (
+			id  int64
+			err error
+		)
+		switch number := value.(type) {
+		case json.Number:
+			id, err = number.Int64()
+		case float64:
+			id = int64(number)
+			if float64(id) != number {
+				err = fmt.Errorf("token id %v is not an integer", number)
+			}
+		default:
+			err = fmt.Errorf("token id %v is not a number", value)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("prompt is not a list of token ids: %w", err)
+		}
+		if id < 0 || id > math.MaxUint32 {
+			return nil, fmt.Errorf("prompt is not a list of token ids: token id %d out of range", id)
+		}
+		tokenIDs = append(tokenIDs, uint32(id))
+	}
+	return tokenIDs, nil
 }
 
 func parseResponsesPrompt(instructions, input any) (*common.ChatMessage, error) {
@@ -182,6 +226,17 @@ func GetPromptString(chatMessage *common.ChatMessage) string {
 	// If Text field is present, return text directly (for prompt format)
 	if chatMessage.Text != "" {
 		return chatMessage.Text
+	}
+
+	// Pre-tokenized prompts are encoded as four bytes per token id so that the
+	// prefix cache hashes on token instead of character boundaries and the
+	// token count derived from the string length stays exact.
+	if len(chatMessage.TokenIDs) > 0 {
+		encoded := make([]byte, 4*len(chatMessage.TokenIDs))
+		for i, tokenID := range chatMessage.TokenIDs {
+			binary.BigEndian.PutUint32(encoded[i*4:], tokenID)
+		}
+		return string(encoded)
 	}
 
 	// For chat messages, convert to ChatML format

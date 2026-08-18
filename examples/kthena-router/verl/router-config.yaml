@@ -1,0 +1,27 @@
+# Router scheduler configuration for verl RL rollouts.
+#
+# A GRPO step sends the same prompt `rollout.n` times and re-sends the prompts of
+# earlier turns, so KV-cache affinity is what makes routing worth anything at
+# all: prefix-cache dominates the score, and the in-flight request count only
+# breaks ties between equally warm replicas.
+scheduler:
+  pluginConfig:
+    - name: prefix-cache
+      args:
+        # Prompt token ids are hashed as four bytes each, so a 64 byte block
+        # matches vLLM's 16 token KV cache block.
+        blockSizeToHash: 64
+        # 256 blocks cover a 4096 token prompt.
+        maxBlocksToMatch: 256
+        maxHashCacheSize: 500000
+        topKMatches: 5
+    - name: least-request
+      args:
+        maxWaitingRequests: 32
+  plugins:
+    Score:
+      enabled:
+        - name: prefix-cache
+          weight: 2
+        - name: least-request
+          weight: 1

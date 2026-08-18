@@ -137,6 +137,11 @@ func (m *TokenizerManager) TokenizePrompt(
 	prompt *common.ChatMessage,
 	pods []*datastore.PodInfo,
 ) ([]uint32, error) {
+	// Pre-tokenized prompts need no tokenizer at all.
+	if len(prompt.TokenIDs) > 0 {
+		return prompt.TokenIDs, nil
+	}
+
 	tokenizer := m.GetTokenizer(model, pods)
 	if tokenizer == nil {
 		return nil, fmt.Errorf("no tokenizer available for model %s", model)

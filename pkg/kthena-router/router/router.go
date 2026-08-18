@@ -94,6 +94,12 @@ func getEnvBool(key string, fallback bool) bool {
 var EnableFairnessScheduling = getEnvBool("ENABLE_FAIRNESS_SCHEDULING", false)
 var EnableSessionBoost = getEnvBool("ENABLE_SESSION_BOOST", false)
 
+// EnableEndpointPicker exposes the endpoint picker API, which returns the
+// serving instance the router selected instead of proxying the request to it.
+// It is disabled by default because it reveals the addresses of the serving
+// instances to its callers.
+var EnableEndpointPicker = getEnvBool("ENABLE_ENDPOINT_PICKER", false)
+
 type Router struct {
 	scheduler       scheduler.Scheduler
 	authenticator   *auth.JWTAuthenticator
@@ -277,6 +283,17 @@ func (r *Router) HandlerFunc() gin.HandlerFunc {
 			(c.Request.URL.Path == "/v1/models" || c.Request.URL.Path == "/models") {
 			r.ListModels(c)
 			return
+		}
+
+		if EnableEndpointPicker && c.Request.Method == http.MethodPost {
+			switch c.Request.URL.Path {
+			case SchedulePath:
+				r.Schedule(c)
+				return
+			case ScheduleReleasePath:
+				r.Release(c)
+				return
+			}
 		}
 
 		// Step 1: Parse and validate request

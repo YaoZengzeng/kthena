@@ -28,11 +28,17 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-// ChatMessage represents either a direct text prompt or structured chat messages
+// ChatMessage represents a direct text prompt, a pre-tokenized prompt or
+// structured chat messages
 type ChatMessage struct {
 	// Text is used for direct prompt input (completion mode)
 	Text string `json:"text,omitempty"`
 
 	// Messages is used for chat conversation input (chat mode)
 	Messages []Message `json:"messages,omitempty"`
+
+	// TokenIDs is used for pre-tokenized prompt input. The completion API
+	// accepts token ids instead of text, which is what reinforcement learning
+	// rollout engines send.
+	TokenIDs []uint32 `json:"tokenIds,omitempty"`
 }

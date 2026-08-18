@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"testing"
@@ -64,6 +65,60 @@ func TestParsePrompt(t *testing.T) {
 			name: "prompt not a string",
 			body: map[string]interface{}{
 				"prompt": 123,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "prompt as token ids",
+			body: map[string]interface{}{
+				"prompt": []interface{}{json.Number("1"), json.Number("151643")},
+			},
+			want: &common.ChatMessage{
+				TokenIDs: []uint32{1, 151643},
+			},
+			wantErr: false,
+		},
+		{
+			name: "prompt as float token ids",
+			body: map[string]interface{}{
+				"prompt": []interface{}{float64(7), float64(8)},
+			},
+			want: &common.ChatMessage{
+				TokenIDs: []uint32{7, 8},
+			},
+			wantErr: false,
+		},
+		{
+			name: "prompt as empty token id list",
+			body: map[string]interface{}{
+				"prompt": []interface{}{},
+			},
+			want: &common.ChatMessage{
+				TokenIDs: []uint32{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "prompt as batched token ids",
+			body: map[string]interface{}{
+				"prompt": []interface{}{[]interface{}{json.Number("1")}},
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "prompt as negative token id",
+			body: map[string]interface{}{
+				"prompt": []interface{}{json.Number("-1")},
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "prompt as fractional token id",
+			body: map[string]interface{}{
+				"prompt": []interface{}{json.Number("1.5")},
 			},
 			want:    nil,
 			wantErr: true,
@@ -321,6 +376,13 @@ func TestGetPromptString(t *testing.T) {
 				},
 			},
 			want: "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nhello<|im_end|>\n",
+		},
+		{
+			name: "token ids field present",
+			chatMessage: common.ChatMessage{
+				TokenIDs: []uint32{1, 151643},
+			},
+			want: string([]byte{0, 0, 0, 1, 0, 2, 80, 91}),
 		},
 		{
 			name:        "both empty",

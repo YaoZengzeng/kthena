@@ -122,6 +122,10 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+            {{- if .Values.kthenaRouter.endpointPicker.enabled }}
+            - name: ENABLE_ENDPOINT_PICKER
+              value: "true"
+            {{- end }}
             # Access log configuration
             - name: ACCESS_LOG_ENABLED
               value: {{ .Values.kthenaRouter.accessLog.enabled | quote }}

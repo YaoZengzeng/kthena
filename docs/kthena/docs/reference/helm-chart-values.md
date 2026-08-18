@@ -24,6 +24,7 @@ A Helm chart for deploying Kthena
 | networking.kthenaRouter.debugPort | int | `15000` | Debug server port for Kthena Router (localhost only). |
 | networking.kthenaRouter.drainTimeout | string | `"5m"` | This should be less than terminationGracePeriodSeconds. |
 | networking.kthenaRouter.enabled | bool | `true` | Enable Kthena Router. |
+| networking.kthenaRouter.endpointPicker.enabled | bool | `false` | Expose the endpoint picker API.<br/> Enable it only for trusted clients that dispatch requests themselves,<br/> because the response reveals the addresses of the serving instances. |
 | networking.kthenaRouter.fairness.enabled | bool | `false` | Enable user-fairness scheduling. Mutually exclusive with sessionBoost. |
 | networking.kthenaRouter.fairness.inputTokenWeight | float | `1` | User-fairness strategy: weight multiplier for input tokens. |
 | networking.kthenaRouter.fairness.maxConcurrent | int | `0` | Global total inflight request limit admitted through the fairness gate.<br/> `0` or unset falls back to QPS-based rate limiting. |

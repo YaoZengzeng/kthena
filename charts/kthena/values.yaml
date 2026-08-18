@@ -123,6 +123,13 @@ networking:
       # rejected with HTTP 504. Defaults to `30s`; set a non-positive duration<br/>
       # (e.g. `0s`) to disable it (bounded only by client disconnect).
       timeout: "30s"
+    # endpointPicker exposes the endpoint picker API, which returns the serving
+    # instance the router selected instead of proxying the request to it.
+    endpointPicker:
+      # -- Expose the endpoint picker API.<br/>
+      # Enable it only for trusted clients that dispatch requests themselves,<br/>
+      # because the response reveals the addresses of the serving instances.
+      enabled: false
     gatewayAPI:
       # -- Enable Gateway API related features.
       enabled: false

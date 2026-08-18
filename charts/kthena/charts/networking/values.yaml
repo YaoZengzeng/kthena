@@ -82,6 +82,13 @@ kthenaRouter:
     # duration (e.g. "0s") to disable the timeout, in which case a request is bounded
     # only by client disconnect.
     timeout: "30s"
+  # endpointPicker exposes the endpoint picker API, which returns the serving
+  # instance the router selected instead of proxying the request to it. Enable it
+  # only for trusted clients that dispatch requests themselves, because the
+  # response reveals the addresses of the serving instances.
+  endpointPicker:
+    # enabled controls whether the endpoint picker API is exposed
+    enabled: false
   # accessLog configuration for request logging
   accessLog:
     # enabled controls whether access logging is active
