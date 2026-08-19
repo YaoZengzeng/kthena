@@ -16,8 +16,8 @@ large amount of redundant prefill.
 
 The integration replaces verl's replica selection with the router and needs no
 verl source changes: it is one Hydra override. The router runs as a standalone
-binary with [file-based resources](standalone-router.md), so an RL run does not
-need a Kubernetes cluster.
+binary with [file-based resources](standalone-router.md), so it needs no
+controller and no CRDs installed in the cluster the training job runs on.
 
 The router only selects the replica; verl sends the request itself over its own
 Ray call. Generation therefore keeps every rollout feature that depends on the
@@ -199,5 +199,5 @@ keeps the release path safe to fire and forget.
 ## Example
 
 [examples/kthena-router/verl](https://github.com/volcano-sh/kthena/tree/main/examples/kthena-router/verl)
-contains a one-command demo that runs GRPO on GSM8K with Qwen3-0.6B on two
-20GB GPUs, without Kubernetes.
+contains a one-command demo that runs GRPO on GSM8K with Qwen3-0.6B in a single
+pod on two 20GB GPUs.

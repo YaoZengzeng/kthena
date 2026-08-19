@@ -7,9 +7,9 @@ selection with the router, which steers every request to the replica whose KV
 cache already holds the longest prefix of the prompt. A prompt shared across a
 GRPO group is then prefilled once instead of once per replica.
 
-No verl source changes are required and no Kubernetes cluster is involved: the
-router runs as a plain binary with `--resource-source=file`, so the whole
-integration is one Hydra override.
+No verl source changes are required: the whole integration is one Hydra
+override. The router runs as a plain binary with `--resource-source=file`, so it
+needs no controller and no CRDs installed in the cluster.
 
 ## How it works
 
@@ -46,19 +46,21 @@ the router scheduler configuration used here is [router-config.yaml](router-conf
 
 ## Run it (one command)
 
-Prerequisites: Docker with the NVIDIA container runtime, two GPUs of roughly
-20GB (the demo is tuned for RTX 4000 Ada), and Go to build the router binary.
+Prerequisites: a Kubernetes cluster with a node exposing two GPUs of roughly
+20GB (the demo is tuned for RTX 4000 Ada), `kubectl` access to it, and Go to
+build the router binary.
 
 ```bash
 bash examples/kthena-router/verl/run-demo.sh            # rollouts routed by Kthena
 bash examples/kthena-router/verl/run-demo.sh native     # baseline: verl round-robin
-bash examples/kthena-router/verl/run-demo.sh teardown   # remove the container
+bash examples/kthena-router/verl/run-demo.sh logs       # copy the logs out of the pod
+bash examples/kthena-router/verl/run-demo.sh teardown   # delete the pod
 ```
 
-The script builds `bin/kthena-router`, starts one verl container with both GPUs,
-installs verl and the integration, downloads GSM8K and Qwen3-0.6B, and runs GRPO.
-Everything downloaded is cached in `$DEMO_DIR` (default `/root/kthena-verl-demo`),
-so re-runs skip straight to training.
+The script builds `bin/kthena-router`, applies [pod.yaml](pod.yaml) to get one
+pod with both GPUs, copies the binary and the integration in, installs verl,
+downloads GSM8K and Qwen3-0.6B, and runs GRPO. Everything downloaded stays in
+the pod, so re-runs with `SKIP_SETUP=1` go straight to training.
 
 ## Why two GPUs and this model
 
@@ -67,45 +69,50 @@ vLLM replicas the router can choose between is `GPUs / tensor_parallel_size`.
 With `TP=1`, two GPUs give two replicas — the minimum for routing to mean
 anything, since one replica makes any router a no-op.
 
-Qwen3-4B (the upstream default of the example script this demo reuses) does not
-fit colocated on a 20GB card, so the demo uses Qwen3-0.6B. Model size is
-irrelevant for demonstrating routing.
+Qwen3-4B does not fit colocated on a 20GB card, so the demo uses Qwen3-0.6B.
+Model size is irrelevant for demonstrating routing.
 
 ## Time budget
 
-Once the verl image is pulled and `$DEMO_DIR` is warm, a run finishes in a few
-minutes: Qwen3-0.6B, `STEPS=3`, batch 32, 512 token prompts and responses, and
-validation disabled (`val_before_train=False`, `test_freq=-1`). The one-time
-costs are the image pull and the first setup (verl install, model and dataset
-download).
+Once the verl image is pulled, a run finishes in a few minutes: Qwen3-0.6B,
+`STEPS=2`, batch 8, 512 token prompts, 128 token responses, and validation
+disabled (`val_before_train=False`, `test_freq=-1`). The one-time costs are the
+~12GB image pull and the first setup (verl install, model and dataset download).
 
 ## Tuning
 
-| Variable       | Default                    | Meaning                                   |
-| -------------- | -------------------------- | ----------------------------------------- |
-| `IMAGE`        | `verlai/verl:vllm024.dev2` | verl environment image                    |
-| `DEMO_DIR`     | `/root/kthena-verl-demo`   | Host cache for verl, model, data and logs |
-| `VERL_COMMIT`  | pinned commit              | verl revision installed in the container  |
-| `MODEL`        | `Qwen/Qwen3-0.6B`          | Policy model                              |
-| `STEPS`        | `3`                        | Training steps                            |
-| `N`            | `8`                        | GRPO rollout group size                   |
-| `GPU_MEM_UTIL` | `0.5`                      | vLLM memory fraction, lower it on OOM     |
-| `SKIP_SETUP=1` | unset                      | Reuse an already prepared container       |
+| Variable       | Default            | Meaning                               |
+| -------------- | ------------------ | ------------------------------------- |
+| `POD`          | `verl-kthena-demo` | Pod name                              |
+| `VERL_COMMIT`  | pinned commit      | verl revision installed in the pod    |
+| `MODEL`        | `Qwen/Qwen3-0.6B`  | Policy model                          |
+| `STEPS`        | `2`                | Training steps                        |
+| `N`            | `4`                | GRPO rollout group size               |
+| `GPU_MEM_UTIL` | `0.4`              | vLLM memory fraction, lower it on OOM |
+| `SKIP_SETUP=1` | unset              | Reuse an already prepared pod         |
+
+The demo asks Ray for more logical CPUs than the pod has
+(`ray_kwargs.ray_init.num_cpus=32`). verl reserves one placement group for the
+FSDP workers and another for the rollout replicas, and on a small node the
+second one would otherwise never be scheduled.
 
 ## Inspecting the routing
 
-The router writes its manifests, configuration and log below
-`$DEMO_DIR/router`. While a run is in progress:
+`bash run-demo.sh logs` copies `train.log`, `router.log` and the generated
+`rollout.yaml` out of the pod. While a run is in progress:
 
 ```bash
+# every rollout the router scheduled, and every completion reported back
+kubectl exec verl-kthena-demo -- grep -c 'POST "/v1/schedule"' /workspace/router/router.log
+
 # the replicas the router load balances over
-cat "$DEMO_DIR/router/resources/rollout.yaml"
+kubectl exec verl-kthena-demo -- cat /workspace/router/resources/rollout.yaml
 
 # prefix cache entries and scheduling metrics
-docker exec kthena-verl-demo curl -s localhost:9090/metrics | grep kthena_router
+kubectl exec verl-kthena-demo -- curl -s localhost:9090/metrics | grep kthena_router
 
 # the serving instances the router knows about, with their scraped engine metrics
-docker exec kthena-verl-demo curl -s localhost:15000/debug/config_dump/pods
+kubectl exec verl-kthena-demo -- curl -s localhost:15000/debug/config_dump/pods
 ```
 
 ## Using an already running router

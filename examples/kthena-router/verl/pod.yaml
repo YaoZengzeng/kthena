@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: verl-kthena-demo
+spec:
+  restartPolicy: Never
+  containers:
+    - name: verl
+      # verl environment image; verl itself is installed from source by the demo.
+      image: verlai/verl:vllm024.dev2
+      command: ["sleep", "infinity"]
+      env:
+        - name: HF_HOME
+          value: /workspace/hf
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+      resources:
+        limits:
+          nvidia.com/gpu: "2"
+          # The rollout replicas and the FSDP workers each reserve a Ray
+          # placement group, so the demo needs headroom on CPU and memory.
+          cpu: "14"
+          memory: 50Gi
+        requests:
+          nvidia.com/gpu: "2"
+          cpu: "8"
+          memory: 24Gi
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: workspace
+      emptyDir:
+        sizeLimit: 200Gi
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi

@@ -1,181 +1,171 @@
 #!/usr/bin/env bash
-# run-demo.sh -- one-shot verl + Kthena router demo on 2 x ~20GB GPUs.
+# run-demo.sh -- verl + Kthena router demo on a node with 2 x ~20GB GPUs.
 #
-# Runs GRPO on GSM8K with Qwen3-0.6B in a single verl container, with the two
-# vLLM rollout replicas fronted by a standalone kthena-router binary. No
-# Kubernetes, no Ray cluster manifest: the router reads its ModelServer and
-# ModelRoute manifests from a directory (--resource-source=file), so the whole
-# demo is `docker run` plus a Hydra override.
+# Runs GRPO on GSM8K with Qwen3-0.6B in a single pod, with the two vLLM rollout
+# replicas fronted by a standalone kthena-router binary. The router reads its
+# ModelServer and ModelRoute manifests from a directory
+# (--resource-source=file), so it needs no controller and no CRDs in the
+# cluster: the whole demo is one pod plus a Hydra override.
 #
 # Usage:
 #   bash run-demo.sh                # rollouts routed by the Kthena router
 #   bash run-demo.sh native         # baseline, verl's built-in round-robin
-#   bash run-demo.sh teardown       # remove the container
+#   bash run-demo.sh logs           # copy the router and training logs out
+#   bash run-demo.sh teardown       # delete the pod
 #
 # Env overrides (all optional):
-#   IMAGE          verl environment image     (default: verlai/verl:vllm024.dev2)
-#   CONTAINER      container name             (default: kthena-verl-demo)
-#   DEMO_DIR       host cache dir             (default: /root/kthena-verl-demo)
-#   VERL_REPO      verl git remote            (default: https://github.com/volcengine/verl.git)
+#   POD            pod name                   (default: verl-kthena-demo)
 #   VERL_COMMIT    verl commit to install
 #   MODEL          HuggingFace model id       (default: Qwen/Qwen3-0.6B)
-#   STEPS          training steps             (default: 3)
-#   N              GRPO rollout group size    (default: 8)
-#   GPU_MEM_UTIL   vLLM memory fraction       (default: 0.5, lower it on OOM)
-#   SKIP_SETUP=1   reuse an already prepared container
+#   STEPS          training steps             (default: 2)
+#   N              GRPO rollout group size    (default: 4)
+#   GPU_MEM_UTIL   vLLM memory fraction       (default: 0.4, lower it on OOM)
+#   SKIP_SETUP=1   reuse an already prepared pod
 set -euo pipefail
 
 MODE="${1:-kthena}"
-IMAGE="${IMAGE:-verlai/verl:vllm024.dev2}"
-CONTAINER="${CONTAINER:-kthena-verl-demo}"
-DEMO_DIR="${DEMO_DIR:-/root/kthena-verl-demo}"
+POD="${POD:-verl-kthena-demo}"
 VERL_REPO="${VERL_REPO:-https://github.com/volcengine/verl.git}"
 VERL_COMMIT="${VERL_COMMIT:-b5021d3da11fe78e64e9dbfc175641e7a0a874fd}"
 MODEL="${MODEL:-Qwen/Qwen3-0.6B}"
-STEPS="${STEPS:-3}"
-N="${N:-8}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.5}"
+STEPS="${STEPS:-2}"
+N="${N:-4}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.4}"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 START_TS=$(date +%s)
-elapsed() { printf '[%dm%02ds]' $(((($(date +%s) - START_TS)) / 60)) $((($(date +%s) - START_TS) % 60)); }
-
-if [[ "$MODE" == "teardown" ]]; then
-  echo ">> removing container '$CONTAINER'"
-  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  echo ">> cached models, data and logs are kept in $DEMO_DIR"
-  exit 0
-fi
+elapsed() { printf '[%dm%02ds]' $((($(date +%s) - START_TS) / 60)) $((($(date +%s) - START_TS) % 60)); }
+in_pod() { kubectl exec -i "$POD" -- bash -c "$1"; }
 
 case "$MODE" in
+teardown)
+  kubectl delete pod "$POD" --ignore-not-found
+  exit 0
+  ;;
+logs)
+  kubectl cp "$POD:/workspace/demo/train.log" ./train.log
+  kubectl cp "$POD:/workspace/router/router.log" ./router.log
+  kubectl cp "$POD:/workspace/router/resources/rollout.yaml" ./rollout.yaml
+  echo ">> wrote train.log, router.log and rollout.yaml to $PWD"
+  exit 0
+  ;;
 kthena)
   ROUTING_OVERRIDES=(
     "+actor_rollout_ref.rollout.agent.agent_loop_manager_class=kthena.verl_integration.agent_loop_manager.KthenaRouterAgentLoopManager"
-    "+actor_rollout_ref.rollout.custom.kthena_router_binary=/workspace/kthena/bin/kthena-router"
-    "+actor_rollout_ref.rollout.custom.kthena_router_config=/workspace/kthena/examples/kthena-router/verl/router-config.yaml"
-    "+actor_rollout_ref.rollout.custom.kthena_router_work_dir=/workspace/demo/router"
+    "+actor_rollout_ref.rollout.custom.kthena_router_binary=/workspace/kthena/kthena-router"
+    "+actor_rollout_ref.rollout.custom.kthena_router_config=/workspace/kthena/router-config.yaml"
+    "+actor_rollout_ref.rollout.custom.kthena_router_work_dir=/workspace/router"
   )
-  EXPERIMENT_NAME="kthena_router_2gpu"
   ;;
 native)
   ROUTING_OVERRIDES=()
-  EXPERIMENT_NAME="native_2gpu"
   ;;
 *)
-  echo "ERROR: mode must be 'kthena', 'native' or 'teardown' (got '$MODE')" >&2
+  echo "ERROR: mode must be 'kthena', 'native', 'logs' or 'teardown' (got '$MODE')" >&2
   exit 1
   ;;
 esac
 
-# --- 1. build the router binary ----------------------------------------------
-if [[ "$MODE" == "kthena" && ! -x "$REPO_ROOT/bin/kthena-router" ]]; then
-  echo "$(elapsed) >> building bin/kthena-router"
-  (cd "$REPO_ROOT" && CGO_ENABLED=0 go build -o bin/kthena-router ./cmd/kthena-router)
+# --- 1. start the pod ---------------------------------------------------------
+if ! kubectl get pod "$POD" >/dev/null 2>&1; then
+  echo "$(elapsed) >> creating pod '$POD' (the first image pull is ~12GB and one-time)"
+  sed "s/name: verl-kthena-demo/name: $POD/" "$HERE/pod.yaml" | kubectl apply -f -
 fi
+kubectl wait --for=condition=Ready "pod/$POD" --timeout=20m
 
-# --- 2. start the container ---------------------------------------------------
-mkdir -p "$DEMO_DIR"
-if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
-  echo "$(elapsed) >> starting container '$CONTAINER' from $IMAGE (first image pull is large and one-time)"
-  docker run -d --name "$CONTAINER" \
-    --gpus all --shm-size=16g --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
-    -v "$REPO_ROOT:/workspace/kthena:ro" \
-    -v "$DEMO_DIR:/workspace/demo" \
-    -e HOME=/workspace/demo \
-    -e HF_HOME=/workspace/demo/hf \
-    -e HF_HUB_ENABLE_HF_TRANSFER=0 \
-    -e WANDB_MODE=offline \
-    -e VERL_LOGGING_LEVEL=INFO \
-    -e TOKENIZERS_PARALLELISM=false \
-    "$IMAGE" sleep infinity >/dev/null
-elif [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ]]; then
-  echo "$(elapsed) >> restarting container '$CONTAINER'"
-  docker start "$CONTAINER" >/dev/null
-fi
-
-# --- 3. one-time setup inside the container ----------------------------------
+# --- 2. ship the router binary and the integration into the pod ---------------
 if [[ "${SKIP_SETUP:-0}" != "1" ]]; then
-  echo "$(elapsed) >> preparing verl, the integration, GSM8K and $MODEL (one-time, cached in $DEMO_DIR)"
-  docker exec -i \
-    -e VERL_REPO="$VERL_REPO" -e VERL_COMMIT="$VERL_COMMIT" -e MODEL="$MODEL" \
-    "$CONTAINER" bash -s <<'SETUP'
+  echo "$(elapsed) >> building bin/kthena-router and copying it into the pod"
+  (cd "$REPO_ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/kthena-router ./cmd/kthena-router)
+
+  in_pod 'mkdir -p /workspace/kthena /workspace/demo'
+  tar czf - -C "$REPO_ROOT/bin" kthena-router | in_pod 'tar xzf - -C /workspace/kthena'
+  tar czf - -C "$REPO_ROOT/python" --exclude=__pycache__ kthena | in_pod 'tar xzf - -C /workspace/kthena'
+  tar czf - -C "$HERE" router-config.yaml | in_pod 'tar xzf - -C /workspace/kthena'
+
+  # --- 3. one-time setup inside the pod ---------------------------------------
+  echo "$(elapsed) >> preparing verl, the integration, GSM8K and $MODEL (one-time)"
+  in_pod "
 set -euo pipefail
 exec > >(tee -a /workspace/demo/setup.log) 2>&1
-
-if [[ -f /workspace/demo/.setup-done ]]; then
-  echo "setup already done, skipping"
-  exit 0
-fi
+chmod +x /workspace/kthena/kthena-router
 
 # verl itself is not in the environment image; install it from source.
 if [[ ! -d /workspace/demo/verl/.git ]]; then
-  git clone "$VERL_REPO" /workspace/demo/verl
+  mkdir -p /workspace/demo/verl && cd /workspace/demo/verl && git init -q
+  git remote add origin '$VERL_REPO'
+  git fetch --depth 1 -q origin '$VERL_COMMIT'
+  git checkout -q FETCH_HEAD
 fi
-git -C /workspace/demo/verl fetch --quiet origin "$VERL_COMMIT" || true
-git -C /workspace/demo/verl checkout --quiet "$VERL_COMMIT"
-pip install --no-deps -e /workspace/demo/verl
+pip install --no-deps -q -e /workspace/demo/verl
 
-# Make the Kthena integration importable from every process in the container,
+# Make the Kthena integration importable from every process in the pod,
 # including the Ray actors that verl spawns.
-python3 - <<'PY'
+python3 -c \"
 import site
-with open(f"{site.getsitepackages()[0]}/kthena-verl-integration.pth", "w") as f:
-    f.write("/workspace/kthena/python\n")
-PY
-python3 -c "import kthena.verl_integration"
+open(site.getsitepackages()[0] + '/kthena-verl-integration.pth', 'w').write('/workspace/kthena')
+\"
+python3 -c 'import verl, kthena.verl_integration'
 
-python3 /workspace/demo/verl/examples/data_preprocess/gsm8k.py --local_save_dir /workspace/demo/data/gsm8k
-
-python3 - <<PY
+python3 /workspace/demo/verl/examples/data_preprocess/gsm8k.py --local_save_dir /workspace/demo/data/gsm8k &
+python3 -c \"
 from huggingface_hub import snapshot_download
-
-snapshot_download("$MODEL", local_dir="/workspace/demo/models/$MODEL")
-PY
-
-touch /workspace/demo/.setup-done
-echo "setup complete"
-SETUP
+snapshot_download('$MODEL', local_dir='/workspace/demo/models/$MODEL')
+\" &
+wait
+"
 fi
 
 # --- 4. train -----------------------------------------------------------------
 echo "$(elapsed) >> training (mode=$MODE, steps=$STEPS, n=$N, gpu_mem_util=$GPU_MEM_UTIL)"
-docker exec -i \
-  -e STEPS="$STEPS" -e N="$N" -e GPU_MEM_UTIL="$GPU_MEM_UTIL" -e MODEL="$MODEL" \
-  -e EXPERIMENT_NAME="$EXPERIMENT_NAME" \
-  "$CONTAINER" bash -s -- "${ROUTING_OVERRIDES[@]}" <<'TRAIN'
+in_pod "
 set -euxo pipefail
+exec > /workspace/demo/train.log 2>&1
+cd /workspace/demo/verl
 
-NGPUS_PER_NODE=2 \
-TRAIN_BATCH_SIZE=32 \
-PPO_MINI_BATCH_SIZE=16 \
-MODEL_PATH="/workspace/demo/models/$MODEL" \
-TRAIN_FILE=/workspace/demo/data/gsm8k/train.parquet \
-TEST_FILE=/workspace/demo/data/gsm8k/test.parquet \
-MAX_PROMPT_LENGTH=512 \
-MAX_RESPONSE_LENGTH=512 \
-SAVE_FREQ=-1 \
-PROJECT_NAME=kthena_verl_demo \
-  bash /workspace/demo/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
+python3 -m verl.trainer.main_ppo \
+  algorithm.adv_estimator=grpo \
+  data.train_files=/workspace/demo/data/gsm8k/train.parquet \
+  data.val_files=/workspace/demo/data/gsm8k/test.parquet \
+  data.train_batch_size=8 \
+  data.max_prompt_length=512 \
+  data.max_response_length=128 \
+  data.filter_overlong_prompts=True \
+  actor_rollout_ref.model.path=/workspace/demo/models/$MODEL \
+  actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
+  actor_rollout_ref.actor.use_kl_loss=True \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.mode=async \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.n="$N" \
-  actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEM_UTIL" \
+  actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM_UTIL \
+  actor_rollout_ref.rollout.n=$N \
   actor_rollout_ref.rollout.enforce_eager=True \
-  actor_rollout_ref.rollout.max_model_len=2048 \
-  actor_rollout_ref.rollout.max_num_batched_tokens=2048 \
-  actor_rollout_ref.rollout.max_num_seqs=64 \
+  actor_rollout_ref.rollout.max_model_len=1024 \
+  actor_rollout_ref.rollout.max_num_batched_tokens=1024 \
+  actor_rollout_ref.rollout.max_num_seqs=32 \
   actor_rollout_ref.rollout.disable_log_stats=False \
-  trainer.logger='["console"]' \
-  trainer.total_training_steps="$STEPS" \
-  trainer.val_before_train=False \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.ref.fsdp_config.param_offload=True \
+  trainer.logger='[\"console\"]' \
+  trainer.n_gpus_per_node=2 \
+  trainer.nnodes=1 \
+  trainer.save_freq=-1 \
   trainer.test_freq=-1 \
+  trainer.val_before_train=False \
+  trainer.total_training_steps=$STEPS \
   trainer.default_local_dir=/workspace/demo/checkpoints \
   hydra.run.dir=/workspace/demo/hydra \
-  "$@"
-TRAIN
+  ray_kwargs.ray_init.num_cpus=32 \
+  ${ROUTING_OVERRIDES[*]}
+"
 
 echo "$(elapsed) >> done."
 if [[ "$MODE" == "kthena" ]]; then
-  echo "   router log:     $DEMO_DIR/router/router.log"
-  echo "   router manifests: $DEMO_DIR/router/resources/rollout.yaml"
+  printf '   rollouts scheduled by the router: '
+  in_pod 'grep -c "POST \"/v1/schedule\"" /workspace/router/router.log'
 fi
-echo "   tear down with: bash $0 teardown"
+echo "   copy the logs out with: bash $0 logs"
+echo "   tear down with:         bash $0 teardown"
