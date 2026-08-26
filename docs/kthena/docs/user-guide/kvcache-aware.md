@@ -354,6 +354,10 @@ data:
               weight: 1
 ```
 
+:::note
+Always enable `kvcache-aware` together with at least one other score plugin (e.g. `least-request`). The plugin returns no scores when there are no cached blocks yet (cold start) or when tokenization fails; if it were the only score plugin, the scheduler would have no candidate pods and requests would fail.
+:::
+
 **Plugin arguments:**
 
 | Parameter                     | Default | Description                                                                                        |
