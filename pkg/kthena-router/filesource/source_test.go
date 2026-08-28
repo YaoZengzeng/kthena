@@ -103,7 +103,7 @@ func TestSourceLoadsResources(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, pods, 2)
 
-	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-1"})
+	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "demo-server:vllm-1"})
 	require.NotNil(t, podInfo)
 	assert.Equal(t, "10.0.0.2", podInfo.GetPod().Status.PodIP)
 }
@@ -155,7 +155,7 @@ spec:
 	require.NoError(t, os.Remove(filepath.Join(dir, "server.yaml")))
 	require.NoError(t, source.sync())
 	assert.Nil(t, store.GetModelServer(msName))
-	assert.Nil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-0"}))
+	assert.Nil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "demo-server:vllm-0"}))
 }
 
 func TestSourceKeepsLastGoodSnapshotOnParseError(t *testing.T) {
@@ -176,6 +176,62 @@ func TestSourceRejectsResourceWithoutName(t *testing.T) {
 
 	source, _ := newTestSource(t, dir)
 	assert.ErrorContains(t, source.sync(), "metadata.name")
+}
+
+func TestSourceRejectsInvalidResources(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "route.yaml", modelRouteManifest)
+
+	source, store := newTestSource(t, dir)
+	require.NoError(t, source.sync())
+
+	// Endpoints and workloadSelector.matchLabels are mutually exclusive; the
+	// webhook would reject this ModelServer, so file mode must reject it too.
+	writeManifest(t, dir, "server.yaml", `apiVersion: networking.serving.volcano.sh/v1alpha1
+kind: ModelServer
+metadata:
+  name: demo-server
+spec:
+  inferenceEngine: vLLM
+  workloadSelector:
+    matchLabels:
+      app: vllm
+  endpoints:
+    - name: vllm-0
+      address: 10.0.0.1
+      port: 8000
+`)
+	require.ErrorContains(t, source.sync(), "mutually exclusive")
+
+	// The last good snapshot keeps serving and the invalid server is not stored.
+	assert.NotNil(t, store.GetModelRoute("default/demo"))
+	assert.Nil(t, store.GetModelServer(types.NamespacedName{Namespace: "default", Name: "demo-server"}))
+}
+
+func TestSourceConvertsSecretStringData(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "secret.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: provider-auth
+data:
+  keep: a2VlcA==
+  overridden: b2xk
+stringData:
+  token: my-token
+  overridden: new
+`)
+
+	source, store := newTestSource(t, dir)
+	require.NoError(t, source.sync())
+
+	secret := store.GetSecret(types.NamespacedName{Namespace: "default", Name: "provider-auth"})
+	require.NotNil(t, secret)
+	assert.Empty(t, secret.StringData)
+	assert.Equal(t, []byte("keep"), secret.Data["keep"])
+	assert.Equal(t, []byte("my-token"), secret.Data["token"])
+	// stringData wins over data on conflicting keys, like on the API server.
+	assert.Equal(t, []byte("new"), secret.Data["overridden"])
 }
 
 func TestNewRejectsMissingDirectory(t *testing.T) {

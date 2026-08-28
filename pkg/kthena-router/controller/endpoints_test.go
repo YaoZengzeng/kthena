@@ -63,8 +63,8 @@ func TestSyncStaticEndpoints(t *testing.T) {
 
 	require.NoError(t, SyncStaticEndpoints(store, ms))
 
-	assert.Equal(t, []string{"vllm-0", "vllm-1"}, podNames(t, store, msName))
-	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-0"})
+	assert.Equal(t, []string{"ms:vllm-0", "ms:vllm-1"}, podNames(t, store, msName))
+	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "ms:vllm-0"})
 	require.NotNil(t, podInfo)
 	assert.Equal(t, "10.0.0.1", podInfo.GetPod().Status.PodIP)
 	assert.Equal(t, string(aiv1alpha1.VLLM), podInfo.GetEngine())
@@ -83,14 +83,14 @@ func TestSyncStaticEndpointsRemovesStaleEndpoints(t *testing.T) {
 	updated := staticModelServer(aiv1alpha1.Endpoint{Name: "vllm-0", Address: "10.0.0.3"})
 	require.NoError(t, SyncStaticEndpoints(store, updated))
 
-	assert.Equal(t, []string{"vllm-0"}, podNames(t, store, msName))
-	assert.Nil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-1"}))
-	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-0"})
+	assert.Equal(t, []string{"ms:vllm-0"}, podNames(t, store, msName))
+	assert.Nil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "ms:vllm-1"}))
+	podInfo := store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "ms:vllm-0"})
 	require.NotNil(t, podInfo)
 	assert.Equal(t, "10.0.0.3", podInfo.GetPod().Status.PodIP)
 }
 
-func TestSyncStaticEndpointsKeepsSharedEndpoints(t *testing.T) {
+func TestSyncStaticEndpointsIsolatesModelServers(t *testing.T) {
 	store := newStoreWithMockBackend()
 	shared := aiv1alpha1.Endpoint{Name: "vllm-0", Address: "10.0.0.1"}
 
@@ -101,10 +101,16 @@ func TestSyncStaticEndpointsKeepsSharedEndpoints(t *testing.T) {
 	require.NoError(t, SyncStaticEndpoints(store, first))
 	require.NoError(t, SyncStaticEndpoints(store, second))
 
-	// The endpoint disappears from the first ModelServer but is still served by
-	// the second one, so it must stay in the store.
+	// Endpoint names are only unique within one ModelServer, so each server
+	// gets its own instance even when the endpoint names collide.
+	assert.Equal(t, []string{"ms:vllm-0"}, podNames(t, store, utils.GetNamespaceName(first)))
+	assert.Equal(t, []string{"ms-2:vllm-0"}, podNames(t, store, utils.GetNamespaceName(second)))
+
+	// Removing the endpoint from the first ModelServer must not affect the
+	// identically named endpoint of the second one.
 	require.NoError(t, SyncStaticEndpoints(store, staticModelServer()))
 
-	assert.Equal(t, []string{"vllm-0"}, podNames(t, store, utils.GetNamespaceName(second)))
-	assert.NotNil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "vllm-0"}))
+	assert.Nil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "ms:vllm-0"}))
+	assert.Equal(t, []string{"ms-2:vllm-0"}, podNames(t, store, utils.GetNamespaceName(second)))
+	assert.NotNil(t, store.GetPodInfo(types.NamespacedName{Namespace: "default", Name: "ms-2:vllm-0"}))
 }

@@ -35,6 +35,14 @@ const (
 	StaticEndpointLabel = "networking.serving.volcano.sh/static-endpoint"
 )
 
+// EndpointPodName returns the name of the synthetic pod representing the given
+// endpoint. Endpoint names are only unique within one ModelServer, so the name
+// combines both. The ":" separator cannot occur in Kubernetes object names,
+// which keeps the mapping unambiguous and avoids collisions with real pods.
+func EndpointPodName(modelServerName, endpointName string) string {
+	return modelServerName + ":" + endpointName
+}
+
 // EndpointPod builds the synthetic pod representing a statically configured
 // endpoint of the given ModelServer. Representing endpoints as pods lets the
 // whole router pipeline (scheduling, metrics scraping, proxying) treat static
@@ -59,7 +67,7 @@ func EndpointPod(ms *aiv1alpha1.ModelServer, endpoint aiv1alpha1.Endpoint) *core
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        endpoint.Name,
+			Name:        EndpointPodName(ms.Name, endpoint.Name),
 			Namespace:   ms.Namespace,
 			Labels:      labels,
 			Annotations: annotations,

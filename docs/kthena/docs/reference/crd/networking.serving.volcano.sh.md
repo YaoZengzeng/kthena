@@ -46,7 +46,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name uniquely identifies the endpoint within the ModelServer. It is used as<br />the instance identity in the router, for example in metrics and debug output. |  | MaxLength: 253 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Required: \{\} <br /> |
+| `name` _string_ | Name uniquely identifies the endpoint within the ModelServer. Together with<br />the ModelServer name it forms the instance identity in the router, for<br />example in metrics and debug output. |  | MaxLength: 253 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br />Required: \{\} <br /> |
 | `address` _string_ | Address is the IP address or DNS name of the model serving instance. |  | MaxLength: 253 <br />Required: \{\} <br /> |
 | `port` _integer_ | Port is the port the model serving instance listens on. It defaults to<br />`spec.workloadPort.port` when unset. |  | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `labels` _object (keys:string, values:string)_ | Labels are attached to the endpoint and matched by `workloadSelector.pdGroup`<br />to assign the endpoint a prefill or decode role. |  |  |

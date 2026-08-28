@@ -100,7 +100,7 @@ func (v *KthenaRouterValidator) HandleModelRoute(w http.ResponseWriter, r *http.
 	}
 
 	// Validate the ModelRoute
-	allowed, reason := v.validateModelRoute(modelRoute)
+	allowed, reason := ValidateModelRoute(modelRoute)
 
 	// Create the admission response
 	admissionResponse := admissionv1.AdmissionResponse{
@@ -136,7 +136,7 @@ func (v *KthenaRouterValidator) HandleModelServer(w http.ResponseWriter, r *http
 	}
 
 	// Validate the ModelServer
-	allowed, reason := v.validateModelServer(modelServer)
+	allowed, reason := ValidateModelServer(modelServer)
 
 	// Create the admission response
 	admissionResponse := admissionv1.AdmissionResponse{
@@ -172,7 +172,7 @@ func (v *KthenaRouterValidator) HandleExternalModelProvider(w http.ResponseWrite
 	}
 
 	// Validate the ExternalModelProvider
-	allowed, reason := v.validateExternalModelProvider(provider)
+	allowed, reason := ValidateExternalModelProvider(provider)
 
 	// Create the admission response
 	admissionResponse := admissionv1.AdmissionResponse{
@@ -197,8 +197,9 @@ func (v *KthenaRouterValidator) HandleExternalModelProvider(w http.ResponseWrite
 	}
 }
 
-// validateModelRoute validates the ModelRoute resource
-func (v *KthenaRouterValidator) validateModelRoute(modelRoute *networkingv1alpha1.ModelRoute) (bool, string) {
+// ValidateModelRoute validates the ModelRoute resource. It is shared between
+// the admission webhook and the file-based resource source.
+func ValidateModelRoute(modelRoute *networkingv1alpha1.ModelRoute) (bool, string) {
 	var allErrs field.ErrorList
 	specField := field.NewPath("spec")
 
@@ -277,8 +278,9 @@ func (v *KthenaRouterValidator) validateModelRoute(modelRoute *networkingv1alpha
 	return true, ""
 }
 
-// validateModelServer validates the ModelServer resource
-func (v *KthenaRouterValidator) validateModelServer(modelServer *networkingv1alpha1.ModelServer) (bool, string) {
+// ValidateModelServer validates the ModelServer resource. It is shared between
+// the admission webhook and the file-based resource source.
+func ValidateModelServer(modelServer *networkingv1alpha1.ModelServer) (bool, string) {
 	var allErrs field.ErrorList
 	specField := field.NewPath("spec")
 	workloadSelectorField := specField.Child("workloadSelector")
@@ -385,7 +387,9 @@ func validateEndpoints(modelServer *networkingv1alpha1.ModelServer, endpointsFie
 	return allErrs
 }
 
-func (v *KthenaRouterValidator) validateExternalModelProvider(provider *networkingv1alpha1.ExternalModelProvider) (bool, string) {
+// ValidateExternalModelProvider validates the ExternalModelProvider resource.
+// It is shared between the admission webhook and the file-based resource source.
+func ValidateExternalModelProvider(provider *networkingv1alpha1.ExternalModelProvider) (bool, string) {
 	var allErrs field.ErrorList
 	specField := field.NewPath("spec")
 

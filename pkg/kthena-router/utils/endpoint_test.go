@@ -74,7 +74,7 @@ func TestEndpointPod(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := EndpointPod(tt.modelServer, tt.endpoint)
 
-			assert.Equal(t, tt.endpoint.Name, pod.Name)
+			assert.Equal(t, EndpointPodName(tt.modelServer.Name, tt.endpoint.Name), pod.Name)
 			assert.Equal(t, tt.modelServer.Namespace, pod.Namespace)
 			assert.Equal(t, tt.endpoint.Address, pod.Status.PodIP)
 			assert.Equal(t, corev1.PodRunning, pod.Status.Phase)
@@ -86,6 +86,12 @@ func TestEndpointPod(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestEndpointPodName(t *testing.T) {
+	// The separator must be unambiguous: endpoint names are only unique within
+	// one ModelServer and real pods can never carry a ":" in their name.
+	assert.Equal(t, "ms:vllm-0", EndpointPodName("ms", "vllm-0"))
 }
 
 func TestEndpointPort(t *testing.T) {

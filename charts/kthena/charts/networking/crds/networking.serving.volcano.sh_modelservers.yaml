@@ -80,8 +80,9 @@ spec:
                       type: object
                     name:
                       description: |-
-                        Name uniquely identifies the endpoint within the ModelServer. It is used as
-                        the instance identity in the router, for example in metrics and debug output.
+                        Name uniquely identifies the endpoint within the ModelServer. Together with
+                        the ModelServer name it forms the instance identity in the router, for
+                        example in metrics and debug output.
                       maxLength: 253
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                       type: string

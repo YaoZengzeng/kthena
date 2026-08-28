@@ -35,7 +35,10 @@ Supported kinds are `ModelRoute`, `ModelServer`, `ExternalModelProvider` and
 `Secret`. Any other kind is ignored with a warning.
 
 Because there is no API server in this mode, the admission webhook is disabled
-automatically and `--enable-gateway-api` cannot be used.
+automatically and `--enable-gateway-api` cannot be used. The manifests are
+instead validated with the same rules when the directory is loaded; if any
+document is invalid, the whole snapshot is rejected and the router keeps
+serving the last good one.
 
 ## Configuring serving instances
 
@@ -56,17 +59,15 @@ spec:
   - name: vllm-1
     address: 127.0.0.1
     port: 8001
-  workloadPort:
-    port: 8000
   model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
   inferenceEngine: "vLLM"
 ```
 
 | Field     | Description                                                                                                    |
 | --------- | -------------------------------------------------------------------------------------------------------------- |
-| `name`    | Identifies the instance in scheduling, metrics and the debug endpoints. Must be unique within the ModelServer. |
+| `name`    | Identifies the instance in scheduling, metrics and the debug endpoints as `<ModelServer name>:<name>`. Must be unique within the ModelServer. |
 | `address` | IP address or DNS name of the instance.                                                                        |
-| `port`    | Port of the instance. Defaults to `spec.workloadPort.port`.                                                    |
+| `port`    | Port of the instance. Defaults to `spec.workloadPort.port` and is required when that port is unset.            |
 | `labels`  | Labels matched by `spec.workloadSelector.pdGroup` to assign a prefill or decode role.                          |
 
 `spec.endpoints` and `spec.workloadSelector.matchLabels` are mutually exclusive.

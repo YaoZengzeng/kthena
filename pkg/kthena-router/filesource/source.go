@@ -47,6 +47,7 @@ import (
 	"github.com/volcano-sh/kthena/pkg/kthena-router/controller"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/datastore"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/utils"
+	"github.com/volcano-sh/kthena/pkg/kthena-router/webhook"
 )
 
 // DefaultNamespace is used for resources whose manifest omits metadata.namespace.
@@ -151,7 +152,7 @@ func (s *Source) sync() error {
 	for _, content := range contents {
 		if err := decodeInto(content.path, content.data, next); err != nil {
 			// Keep serving the last good snapshot instead of dropping resources
-			// because of a half-written or malformed file.
+			// because of a half-written, malformed or invalid file.
 			return err
 		}
 	}
@@ -254,11 +255,19 @@ func decodeObject(raw json.RawMessage, typeMeta metav1.TypeMeta, res *resources)
 		if err := unmarshal(raw, obj, &obj.ObjectMeta); err != nil {
 			return err
 		}
+		// The admission webhook is disabled without an API server, so the same
+		// semantic validation runs when the manifests are loaded.
+		if ok, reason := webhook.ValidateModelRoute(obj); !ok {
+			return fmt.Errorf("invalid ModelRoute %s/%s: %s", obj.Namespace, obj.Name, reason)
+		}
 		res.modelRoutes[obj.Namespace+"/"+obj.Name] = obj
 	case typeMeta.APIVersion == aiv1alpha1.SchemeGroupVersion.String() && typeMeta.Kind == aiv1alpha1.ModelServerKind:
 		obj := &aiv1alpha1.ModelServer{}
 		if err := unmarshal(raw, obj, &obj.ObjectMeta); err != nil {
 			return err
+		}
+		if ok, reason := webhook.ValidateModelServer(obj); !ok {
+			return fmt.Errorf("invalid ModelServer %s/%s: %s", obj.Namespace, obj.Name, reason)
 		}
 		res.modelServers[utils.GetNamespaceName(obj)] = obj
 	case typeMeta.APIVersion == aiv1alpha1.SchemeGroupVersion.String() && typeMeta.Kind == aiv1alpha1.ExternalModelProviderKind:
@@ -266,11 +275,26 @@ func decodeObject(raw json.RawMessage, typeMeta metav1.TypeMeta, res *resources)
 		if err := unmarshal(raw, obj, &obj.ObjectMeta); err != nil {
 			return err
 		}
+		if ok, reason := webhook.ValidateExternalModelProvider(obj); !ok {
+			return fmt.Errorf("invalid ExternalModelProvider %s/%s: %s", obj.Namespace, obj.Name, reason)
+		}
 		res.providers[utils.GetNamespaceName(obj)] = obj
 	case typeMeta.APIVersion == "v1" && typeMeta.Kind == "Secret":
 		obj := &corev1.Secret{}
 		if err := unmarshal(raw, obj, &obj.ObjectMeta); err != nil {
 			return err
+		}
+		// The API server converts `stringData` into `data` on write; without an
+		// API server the conversion happens here. `stringData` wins on conflicts,
+		// matching the Kubernetes semantics.
+		if len(obj.StringData) > 0 {
+			if obj.Data == nil {
+				obj.Data = make(map[string][]byte, len(obj.StringData))
+			}
+			for key, value := range obj.StringData {
+				obj.Data[key] = []byte(value)
+			}
+			obj.StringData = nil
 		}
 		res.secrets[utils.GetNamespaceName(obj)] = obj
 	default:

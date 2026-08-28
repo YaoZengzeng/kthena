@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 
 	networkingv1alpha1 "github.com/volcano-sh/kthena/pkg/apis/networking/v1alpha1"
 )
@@ -635,13 +634,9 @@ func TestValidateModelRoute(t *testing.T) {
 		},
 	}
 
-	// Create a validator instance
-	kubeClient := fake.NewSimpleClientset()
-	validator := NewKthenaRouterValidator(kubeClient, 8080)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			allowed, reason := validator.validateModelRoute(tt.modelRoute)
+			allowed, reason := ValidateModelRoute(tt.modelRoute)
 
 			assert.Equal(t, tt.expectValid, allowed, "Expected validation result should match")
 
@@ -655,8 +650,7 @@ func TestValidateModelRoute(t *testing.T) {
 }
 
 func TestValidateModelRouteRejectsNilTargetModel(t *testing.T) {
-	validator := NewKthenaRouterValidator(fake.NewSimpleClientset(), 8080)
-	allowed, reason := validator.validateModelRoute(&networkingv1alpha1.ModelRoute{
+	allowed, reason := ValidateModelRoute(&networkingv1alpha1.ModelRoute{
 		Spec: networkingv1alpha1.ModelRouteSpec{
 			ModelName: "test-model",
 			Rules: []*networkingv1alpha1.Rule{{
@@ -942,12 +936,9 @@ func TestValidateModelServer(t *testing.T) {
 		},
 	}
 
-	kubeClient := fake.NewSimpleClientset()
-	validator := NewKthenaRouterValidator(kubeClient, 8080)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			allowed, reason := validator.validateModelServer(tt.modelServer)
+			allowed, reason := ValidateModelServer(tt.modelServer)
 
 			assert.Equal(t, tt.expectValid, allowed, "Expected validation result should match")
 
@@ -1171,12 +1162,9 @@ func TestValidateExternalModelProvider(t *testing.T) {
 		},
 	}
 
-	kubeClient := fake.NewSimpleClientset()
-	validator := NewKthenaRouterValidator(kubeClient, 8080)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			allowed, reason := validator.validateExternalModelProvider(tt.provider)
+			allowed, reason := ValidateExternalModelProvider(tt.provider)
 
 			assert.Equal(t, tt.expectValid, allowed, "Expected validation result should match")
 			if !tt.expectValid {

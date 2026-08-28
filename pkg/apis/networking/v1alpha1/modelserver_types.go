@@ -103,8 +103,9 @@ type PDGroup struct {
 
 // Endpoint describes a single statically configured model serving instance.
 type Endpoint struct {
-	// Name uniquely identifies the endpoint within the ModelServer. It is used as
-	// the instance identity in the router, for example in metrics and debug output.
+	// Name uniquely identifies the endpoint within the ModelServer. Together with
+	// the ModelServer name it forms the instance identity in the router, for
+	// example in metrics and debug output.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=253
