@@ -1,6 +1,6 @@
 # Tokenizer Service
 
-The Kthena Tokenizer Service is an optional, GPU-free component that tokenizes prompts for the [kvcache-aware plugin](./kvcache-aware.md) so that the router does not need to call the backend inference engines for tokenization. It wraps [`vllm render`](https://docs.vllm.ai/en/latest/cli/launch/render/) and dynamically loads one tokenizer per model by watching ModelServer objects.
+The Kthena Tokenizer Service is an optional, GPU-free component that tokenizes prompts for the [kvcache-aware plugin](./kvcache-aware.md) so that the router does not need to call the backend inference engines for tokenization. It wraps [`vllm launch render`](https://docs.vllm.ai/en/latest/cli/launch/render/) and dynamically loads one tokenizer per model by watching ModelServer objects.
 
 The feature is **disabled by default**. When enabled, the router sends `/tokenize` requests to the tokenizer service first and, by default, **falls back to engine-side tokenization** if the service is unavailable or has not loaded the requested model's tokenizer.
 
@@ -16,7 +16,7 @@ The tokenizer service moves this work to a cheap CPU-only component that can sca
 ## How it works
 
 1. The service watches ModelServer objects (all namespaces by default) and reads their `spec.model` field.
-2. For each distinct model, it launches a `vllm render` subprocess, which serves the vLLM-compatible `/tokenize` API using only the model's tokenizer and chat template — no model weights and no GPU.
+2. For each distinct model, it launches a `vllm launch render` subprocess, which serves the vLLM-compatible `/tokenize` API using only the model's tokenizer and chat template — no model weights and no GPU. The image is based on the official vLLM CPU build (`vllm/vllm-openai-cpu`).
 3. The service frontend proxies each `/tokenize` request to the subprocess for the requested `model`.
 4. If no tokenizer is ready for the model, the frontend returns `503` and the router falls back to engine tokenization (unless fallback is disabled).
 
@@ -34,16 +34,13 @@ helm upgrade --install kthena charts/kthena -n kthena-system \
 
 ### Standalone mode
 
-The tokenizer runs as its own Deployment and ClusterIP Service, with optional HPA-based autoscaling. Use this when you serve many models or want to scale tokenizer capacity independently of router replicas.
+The tokenizer runs as its own Deployment and ClusterIP Service. Use this when you serve many models or want to scale tokenizer capacity independently of router replicas.
 
 ```bash
 helm upgrade --install kthena charts/kthena -n kthena-system \
   --set networking.kthenaRouter.tokenizerService.enabled=true \
   --set networking.kthenaRouter.tokenizerService.mode=standalone \
-  --set networking.kthenaRouter.tokenizerService.standalone.replicas=2 \
-  --set networking.kthenaRouter.tokenizerService.standalone.autoscaling.enabled=true \
-  --set networking.kthenaRouter.tokenizerService.standalone.autoscaling.minReplicas=1 \
-  --set networking.kthenaRouter.tokenizerService.standalone.autoscaling.maxReplicas=5
+  --set networking.kthenaRouter.tokenizerService.standalone.replicas=2
 ```
 
 ## Router configuration
@@ -87,31 +84,27 @@ Restart the router after changing the ConfigMap (hot reload is not supported).
 
 All values live under `networking.kthenaRouter.tokenizerService`:
 
-| Value                                                   | Default                               | Description                                      |
-| ------------------------------------------------------- | ------------------------------------- | ------------------------------------------------ |
-| `enabled`                                               | `false`                               | Deploy the tokenizer service                     |
-| `mode`                                                  | `sidecar`                             | `sidecar` or `standalone`                        |
-| `port`                                                  | `8100`                                | Frontend listen port                             |
-| `image.repository`                                      | `ghcr.io/volcano-sh/kthena-tokenizer` | Image repository                                 |
-| `image.tag`                                             | `latest`                              | Image tag                                        |
-| `maxTokenizers`                                         | `8`                                   | Max concurrently loaded model tokenizers         |
-| `extraEnv`                                              | `[]`                                  | Extra env vars, e.g. `HF_TOKEN` for gated models |
-| `resources`                                             | 500m/1Gi – 2/4Gi                      | Container resources                              |
-| `standalone.replicas`                                   | `1`                                   | Replicas when autoscaling is off                 |
-| `standalone.autoscaling.enabled`                        | `false`                               | Create an HPA                                    |
-| `standalone.autoscaling.minReplicas`                    | `1`                                   | HPA minimum                                      |
-| `standalone.autoscaling.maxReplicas`                    | `5`                                   | HPA maximum                                      |
-| `standalone.autoscaling.targetCPUUtilizationPercentage` | `80`                                  | HPA CPU target                                   |
+| Value                 | Default                               | Description                                      |
+| --------------------- | ------------------------------------- | ------------------------------------------------ |
+| `enabled`             | `false`                               | Deploy the tokenizer service                     |
+| `mode`                | `sidecar`                             | `sidecar` or `standalone`                        |
+| `port`                | `8100`                                | Frontend listen port                             |
+| `image.repository`    | `ghcr.io/volcano-sh/kthena-tokenizer` | Image repository                                 |
+| `image.tag`           | `latest`                              | Image tag                                        |
+| `maxTokenizers`       | `8`                                   | Max concurrently loaded model tokenizers         |
+| `extraEnv`            | `[]`                                  | Extra env vars, e.g. `HF_TOKEN` for gated models |
+| `resources`           | 500m/1Gi – 2/4Gi                      | Container resources                              |
+| `standalone.replicas` | `1`                                   | Replicas in standalone mode                      |
 
 Service environment variables (advanced, set via `extraEnv`):
 
-| Variable                           | Default    | Description                                                             |
-| ---------------------------------- | ---------- | ----------------------------------------------------------------------- |
-| `MAX_TOKENIZERS`                   | `8`        | Cap on concurrently loaded tokenizers                                   |
-| `WATCH_NAMESPACE`                  | `""` (all) | Restrict the ModelServer watch to one namespace                         |
-| `RENDERER_STARTUP_TIMEOUT_SECONDS` | `600`      | Time budget for a tokenizer to become ready                             |
-| `VLLM_RENDER_EXTRA_ARGS`           | `""`       | Extra flags for every `vllm render` process, e.g. `--trust-remote-code` |
-| `HF_TOKEN`                         | —          | Hugging Face token for gated models                                     |
+| Variable                           | Default    | Description                                                                    |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------------------ |
+| `MAX_TOKENIZERS`                   | `8`        | Cap on concurrently loaded tokenizers                                          |
+| `WATCH_NAMESPACE`                  | `""` (all) | Restrict the ModelServer watch to one namespace                                |
+| `RENDERER_STARTUP_TIMEOUT_SECONDS` | `600`      | Time budget for a tokenizer to become ready                                    |
+| `VLLM_RENDER_EXTRA_ARGS`           | `""`       | Extra flags for every `vllm launch render` process, e.g. `--trust-remote-code` |
+| `HF_TOKEN`                         | —          | Hugging Face token for gated models                                            |
 
 ## Verification
 

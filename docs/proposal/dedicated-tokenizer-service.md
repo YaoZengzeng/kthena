@@ -18,7 +18,7 @@ creation-date: 2026-09-01
 Introduce an optional, dedicated tokenizer service that the Kthena router uses to
 tokenize prompts for the `kvcache-aware` scheduling plugin, instead of sending
 `/tokenize` requests to the backend inference engines. The service wraps
-[`vllm render`](https://docs.vllm.ai/en/latest/cli/launch/render/) — vLLM's
+[`vllm launch render`](https://docs.vllm.ai/en/latest/cli/launch/render/) — vLLM's
 lightweight, GPU-free frontend — and dynamically loads one tokenizer per model by
 watching ModelServer objects. It can be deployed either as a router sidecar or as a
 standalone, autoscalable service. The feature is disabled by default, and the router
@@ -50,7 +50,7 @@ gives it an independent scaling axis.
    dynamically load/unload the tokenizer for each distinct `spec.model`.
 3. Support two deployment modes, selectable by the user:
    - **sidecar** of the router pod (lowest latency, scales with the router), and
-   - **standalone** Deployment + Service with optional HPA-based autoscaling.
+   - **standalone** Deployment + Service with a configurable replica count.
 4. Fall back transparently to engine-side tokenization when the service is
    unavailable or has not (yet) loaded the requested model's tokenizer. Fallback is
    configurable and enabled by default.
@@ -69,6 +69,8 @@ gives it an independent scaling axis.
    divergence the same way it tolerates today's cross-pod differences.
 4. A Kubernetes CRD for the tokenizer service; configuration stays in Helm values
    and router plugin args.
+5. Autoscaling of the standalone Deployment. Users can attach their own HPA to the
+   `kthena-tokenizer` Deployment if needed; a built-in HPA may be a follow-up.
 
 ### Proposal
 
@@ -79,7 +81,7 @@ gives it an independent scaling axis.
    router sidecar; scheduling no longer touches engine pods for tokenization.
 2. **Operator with many models and high QPS**: a single sidecar cannot hold
    tokenizers for dozens of models. The operator deploys the standalone mode with
-   HPA so tokenizer capacity scales with routing traffic, independent of router
+   multiple replicas so tokenizer capacity scales independently of router
    replicas.
 3. **Operator rolling out a new model**: until the tokenizer for the new model is
    downloaded and ready, the router silently falls back to engine tokenization —
@@ -100,8 +102,8 @@ gives it an independent scaling axis.
         │             │ fallback     │  │  │  └──────────┬────────────┘  │
         └─────────────┼──────────────┘  │  │             │ proxy by model│
                       │                 │  │  ┌──────────▼────────────┐  │
-                      ▼                 │  │  │ vllm render (model A) │  │
-        ┌──────────────────────────┐    │  │  │ vllm render (model B) │  │
+                      ▼                 │  │  │ renderer (model A)    │  │
+        ┌──────────────────────────┐    │  │  │ renderer (model B)    │  │
         │  vLLM / SGLang pods      │    │  │  │ ... one per model     │  │
         │  POST /tokenize (GPU)    │    │  │  └───────────────────────┘  │
         └──────────────────────────┘    │  └─────────────────────────────┘
@@ -116,8 +118,8 @@ The tokenizer service has three parts:
    It inspects the `model` field of each request and proxies it to the renderer
    subprocess that owns that model. If no renderer is ready for the model, it
    returns `503`, which triggers the router-side fallback.
-2. **Renderer manager**: launches and supervises one `vllm render <model>`
-   subprocess per model on consecutive local ports. `vllm render` serves the
+2. **Renderer manager**: launches and supervises one `vllm launch render <model>`
+   subprocess per model on consecutive local ports. `vllm launch render` serves the
    OpenAI-compatible tokenization endpoints using only the model's tokenizer and
    chat template — no weights, no GPU. Crashed renderers are restarted with a
    bounded budget; the number of concurrently loaded tokenizers is capped by
@@ -152,26 +154,26 @@ shared retryable HTTP client.
 
 Helm values (`networking.kthenaRouter.tokenizerService`):
 
-| Key                        | Default   | Meaning                            |
-| -------------------------- | --------- | ---------------------------------- |
-| `enabled`                  | `false`   | Deploy the tokenizer service       |
-| `mode`                     | `sidecar` | `sidecar` or `standalone`          |
-| `port`                     | `8100`    | Frontend listen port               |
-| `maxTokenizers`            | `8`       | Max concurrently loaded tokenizers |
-| `standalone.replicas`      | `1`       | Replicas when HPA is off           |
-| `standalone.autoscaling.*` | disabled  | HPA min/max/CPU target             |
+| Key                   | Default   | Meaning                            |
+| --------------------- | --------- | ---------------------------------- |
+| `enabled`             | `false`   | Deploy the tokenizer service       |
+| `mode`                | `sidecar` | `sidecar` or `standalone`          |
+| `port`                | `8100`    | Frontend listen port               |
+| `maxTokenizers`       | `8`       | Max concurrently loaded tokenizers |
+| `standalone.replicas` | `1`       | Replicas in standalone mode        |
 
 - **Sidecar**: the container is added to the router pod; the plugin endpoint is
   `http://127.0.0.1:8100`. It reuses the router ServiceAccount, which already has
   `get/list/watch` on ModelServers.
-- **Standalone**: a Deployment, ClusterIP Service, dedicated ServiceAccount with a
-  read-only ClusterRole on ModelServers, and an optional `autoscaling/v2` HPA. The
+- **Standalone**: a Deployment, ClusterIP Service, and a dedicated ServiceAccount
+  with a read-only ClusterRole on ModelServers. The
   plugin endpoint is `http://kthena-tokenizer.<namespace>.svc:8100`.
 
 #### Notes / constraints
 
-- The tokenizer image is based on `vllm/vllm-openai` so `vllm render` is available;
-  the runtime path is CPU-only. Gated models need `HF_TOKEN` via `extraEnv`.
+- The tokenizer image is based on the official vLLM CPU build (`vllm/vllm-openai-cpu`)
+  so `vllm launch render` runs on GPU-less nodes; the CUDA image fails platform
+  detection on hosts without a GPU driver. Gated models need `HF_TOKEN` via `extraEnv`.
 - Tokenizer loading downloads tokenizer/config files from the model hub (or a
   mounted cache); `readyz` only reflects watcher sync, so a not-yet-ready model
   simply falls back rather than failing readiness.
@@ -184,7 +186,7 @@ Helm values (`networking.kthenaRouter.tokenizerService`):
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | Tokenizer service down or model not loaded | Router falls back to engine tokenization (default on); scheduling quality unchanged                   |
 | Renderer subprocess crash loops            | Restart budget (`RENDERER_MAX_RESTARTS`), after which the model is marked failed and fallback applies |
-| Memory growth with many models             | `maxTokenizers` cap; standalone mode with HPA for horizontal scale                                    |
+| Memory growth with many models             | `maxTokenizers` cap; standalone mode with more replicas for horizontal scale                          |
 | Token mismatch vs engine                   | Both sides use the model's HF tokenizer; block hashing already tolerates cold misses                  |
 | Extra hop in standalone mode               | Sidecar mode offers a localhost path; both are still far cheaper than a GPU pod round trip            |
 
@@ -199,7 +201,7 @@ Helm values (`networking.kthenaRouter.tokenizerService`):
   `model_watcher.py`, `config.py`), image built by
   `make docker-build-tokenizer` from `python/Dockerfile.tokenizer`.
 - Chart: sidecar injection in the router Deployment; standalone
-  Deployment/Service/HPA/RBAC under
+  Deployment/Service/RBAC under
   `charts/kthena/charts/networking/templates/kthena-tokenizer/`.
 - Observability (follow-up): Prometheus metrics for per-model tokenize latency,
   proxy errors, and fallback counts on both the service and the router.

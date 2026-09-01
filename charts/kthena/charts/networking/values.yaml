@@ -107,7 +107,7 @@ kthenaRouter:
     # enabled controls whether the tokenizer service is deployed (default: false)
     enabled: false
     # mode selects the deployment mode: "sidecar" (runs in the router pod) or
-    # "standalone" (dedicated Deployment + Service, supports autoscaling)
+    # "standalone" (dedicated Deployment + Service)
     mode: sidecar
     # port the tokenizer service listens on
     port: 8100
@@ -134,12 +134,6 @@ kthenaRouter:
     standalone:
       # replicas is the number of tokenizer service instances to run
       replicas: 1
-      autoscaling:
-        # enabled controls whether an HorizontalPodAutoscaler is created
-        enabled: false
-        minReplicas: 1
-        maxReplicas: 5
-        targetCPUUtilizationPercentage: 80
   # kubeAPIQPS is the QPS (queries per second) to use while talking with kubernetes apiserver
   # If 0 or not specified, uses default value (5)
   kubeAPIQPS: 0

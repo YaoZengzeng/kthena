@@ -15,7 +15,7 @@
 """Tokenizer service frontend.
 
 Exposes a vLLM-compatible /tokenize (and /detokenize) API and proxies each
-request to the `vllm render` subprocess that serves the requested model.
+request to the `vllm launch render` subprocess that serves the requested model.
 Requests for models without a ready tokenizer are rejected with 503 so that
 the router can fall back to engine-side tokenization.
 """

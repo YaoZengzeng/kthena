@@ -55,13 +55,9 @@ A Helm chart for deploying Kthena
 | networking.kthenaRouter.tokenizerService.image.repository | string | `"ghcr.io/volcano-sh/kthena-tokenizer"` | Image repository for the tokenizer service. |
 | networking.kthenaRouter.tokenizerService.image.tag | string | `"latest"` | Image tag for the tokenizer service. |
 | networking.kthenaRouter.tokenizerService.maxTokenizers | int | `8` | Maximum number of concurrently loaded model tokenizers. |
-| networking.kthenaRouter.tokenizerService.mode | string | `"sidecar"` | Deployment mode: `sidecar` (runs in the router pod) or `standalone` (dedicated Deployment + Service, supports autoscaling). |
+| networking.kthenaRouter.tokenizerService.mode | string | `"sidecar"` | Deployment mode: `sidecar` (runs in the router pod) or `standalone` (dedicated Deployment + Service). |
 | networking.kthenaRouter.tokenizerService.port | int | `8100` | Port the tokenizer service listens on. |
 | networking.kthenaRouter.tokenizerService.resources | object | `{"limits":{"cpu":"2","memory":"4Gi"},"requests":{"cpu":"500m","memory":"1Gi"}}` | Resources for the tokenizer container. |
-| networking.kthenaRouter.tokenizerService.standalone.autoscaling.enabled | bool | `false` | Enable a HorizontalPodAutoscaler for the standalone tokenizer service. |
-| networking.kthenaRouter.tokenizerService.standalone.autoscaling.maxReplicas | int | `5` | Maximum replicas for autoscaling. |
-| networking.kthenaRouter.tokenizerService.standalone.autoscaling.minReplicas | int | `1` | Minimum replicas for autoscaling. |
-| networking.kthenaRouter.tokenizerService.standalone.autoscaling.targetCPUUtilizationPercentage | int | `80` | Target average CPU utilization percentage. |
 | networking.kthenaRouter.tokenizerService.standalone.replicas | int | `1` | Number of tokenizer service replicas in standalone mode. |
 | networking.kthenaRouter.webhook.enabled | bool | `true` | Enable webhook for Kthena Router. |
 | networking.kthenaRouter.webhook.port | int | `8443` | Container port for Kthena Router webhook. |

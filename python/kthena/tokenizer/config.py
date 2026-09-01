@@ -36,7 +36,7 @@ class TokenizerServiceConfig:
     port: int = field(default_factory=lambda: _env_int("TOKENIZER_PORT", 8100))
     # Host the frontend binds to.
     host: str = field(default_factory=lambda: os.getenv("TOKENIZER_HOST", "0.0.0.0"))
-    # First local port assigned to a `vllm render` subprocess. Each loaded
+    # First local port assigned to a `vllm launch render` subprocess. Each loaded
     # model gets its own consecutive port starting from this value.
     renderer_base_port: int = field(
         default_factory=lambda: _env_int("RENDERER_BASE_PORT", 8200)
@@ -56,7 +56,7 @@ class TokenizerServiceConfig:
     # `--host/--port` flags are appended automatically.
     renderer_command: List[str] = field(
         default_factory=lambda: shlex.split(
-            os.getenv("VLLM_RENDER_COMMAND", "vllm render")
+            os.getenv("VLLM_RENDER_COMMAND", "vllm launch render")
         )
     )
     # Extra arguments appended to every renderer command, e.g.

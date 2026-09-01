@@ -9,9 +9,7 @@ metadata:
     app.kubernetes.io/component: kthena-tokenizer
     {{- include "kthena.labels" $ | nindent 4 }}
 spec:
-  {{- if not .standalone.autoscaling.enabled }}
   replicas: {{ .standalone.replicas }}
-  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/component: kthena-tokenizer

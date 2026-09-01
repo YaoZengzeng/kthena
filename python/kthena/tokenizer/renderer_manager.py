@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Manage one `vllm render` subprocess per model.
+"""Manage one `vllm launch render` subprocess per model.
 
-`vllm render` is vLLM's lightweight, GPU-free frontend that serves the
+`vllm launch render` is vLLM's lightweight, GPU-free frontend that serves the
 OpenAI-compatible /tokenize and /detokenize endpoints without loading model
 weights or an engine. The manager reconciles the set of running renderers
 against the set of models declared by ModelServer objects.

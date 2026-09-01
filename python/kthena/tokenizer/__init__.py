@@ -15,6 +15,6 @@
 """Kthena Tokenizer Service.
 
 A lightweight, GPU-free tokenization service for the Kthena router.
-It wraps ``vllm render`` (one renderer subprocess per model) and keeps the
+It wraps ``vllm launch render`` (one renderer subprocess per model) and keeps the
 set of loaded tokenizers in sync with the ModelServer objects in the cluster.
 """

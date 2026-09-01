@@ -138,7 +138,7 @@ networking:
       # -- Enable the dedicated tokenizer service (wraps `vllm render`).
       enabled: false
       # -- Deployment mode: `sidecar` (runs in the router pod) or `standalone`
-      # (dedicated Deployment + Service, supports autoscaling).
+      # (dedicated Deployment + Service).
       mode: sidecar
       # -- Port the tokenizer service listens on.
       port: 8100
@@ -165,15 +165,6 @@ networking:
       standalone:
         # -- Number of tokenizer service replicas in standalone mode.
         replicas: 1
-        autoscaling:
-          # -- Enable a HorizontalPodAutoscaler for the standalone tokenizer service.
-          enabled: false
-          # -- Minimum replicas for autoscaling.
-          minReplicas: 1
-          # -- Maximum replicas for autoscaling.
-          maxReplicas: 5
-          # -- Target average CPU utilization percentage.
-          targetCPUUtilizationPercentage: 80
     # -- The router will drain all in-flight requests before forcefully closing connections.
     terminationGracePeriodSeconds: 330
     # -- Drain timeout for kthena-router graceful shutdown.
