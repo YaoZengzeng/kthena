@@ -1,0 +1,14 @@
+# Kthena Tokenizer Service image.
+#
+# Built on top of the vLLM OpenAI image so that the GPU-free `vllm render`
+# frontend is available. The service itself only needs the CPU tokenizer
+# path of vLLM; no GPU is required at runtime.
+FROM vllm/vllm-openai:latest AS tokenizer
+
+WORKDIR /app
+COPY kthena/tokenizer/requirements.txt ./tokenizer-requirements.txt
+RUN pip install --no-cache-dir -r tokenizer-requirements.txt
+COPY kthena/__init__.py ./kthena/__init__.py
+COPY kthena/tokenizer/ ./kthena/tokenizer/
+ENV PYTHONPATH="/app"
+ENTRYPOINT ["python3", "-m", "kthena.tokenizer.app"]

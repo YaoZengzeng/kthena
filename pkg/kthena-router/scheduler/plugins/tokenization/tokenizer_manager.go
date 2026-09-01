@@ -35,9 +35,26 @@ import (
 
 const maxEndpointPort = 65535
 
+// TokenizerServiceConfig configures the optional dedicated tokenizer service.
+// When enabled, tokenization requests are sent to the service endpoint first,
+// optionally falling back to the inference engine pods on failure.
+type TokenizerServiceConfig struct {
+	// Enabled turns on the dedicated tokenizer service. Disabled by default.
+	Enabled bool
+	// Endpoint is the base URL of the tokenizer service,
+	// e.g. "http://127.0.0.1:8100" (sidecar) or
+	// "http://kthena-tokenizer.kthena-system.svc:8100" (standalone).
+	Endpoint string
+	// FallbackToEngine falls back to engine-side tokenization when the
+	// tokenizer service fails or has no tokenizer for the model.
+	FallbackToEngine bool
+}
+
 // Remote tokenization is always attempted when an engine port exists.
 type TokenizerManagerConfig struct {
 	EndpointPorts map[string]int
+	// Service optionally routes tokenization to a dedicated tokenizer service.
+	Service TokenizerServiceConfig
 }
 
 type TokenizerManager struct {
@@ -57,6 +74,27 @@ func NewTokenizerManager(config TokenizerManagerConfig) *TokenizerManager {
 // GetTokenizer creates a tokenizer by randomly selecting from the provided pods
 func (m *TokenizerManager) GetTokenizer(model string, pods []*datastore.PodInfo) Tokenizer {
 	return m.createTokenizerFromPods(model, pods)
+}
+
+// createServiceTokenizer creates a tokenizer backed by the dedicated tokenizer
+// service. The service exposes the vLLM-compatible /tokenize API.
+func (m *TokenizerManager) createServiceTokenizer(model string) Tokenizer {
+	config := RemoteTokenizerConfig{
+		Engine:             EngineVLLM,
+		Endpoint:           m.config.Service.Endpoint,
+		Model:              model,
+		AddSpecialTokens:   true,
+		ReturnTokenStrings: false,
+	}
+
+	client := newHTTPClient(m.config.Service.Endpoint, m.client)
+	tok, err := newRemoteTokenizer(config, client, false)
+	if err != nil {
+		klog.Warningf("TokenizerManager: failed to create service tokenizer for model %s at %s: %v",
+			model, m.config.Service.Endpoint, err)
+		return nil
+	}
+	return tok
 }
 
 func (m *TokenizerManager) createTokenizerFromPods(model string, pods []*datastore.PodInfo) Tokenizer {
@@ -139,17 +177,38 @@ func normalizeEngine(engine string) (string, error) {
 	}
 }
 
-// TokenizePrompt tokenizes a prompt (text or chat messages) and returns uint32 tokens
+// TokenizePrompt tokenizes a prompt (text or chat messages) and returns uint32 tokens.
+// When the dedicated tokenizer service is enabled, it is tried first; on failure the
+// manager falls back to engine-side tokenization if configured to do so.
 func (m *TokenizerManager) TokenizePrompt(
 	model string,
 	prompt *common.ChatMessage,
 	pods []*datastore.PodInfo,
 ) ([]uint32, error) {
+	if m.config.Service.Enabled {
+		if tokenizer := m.createServiceTokenizer(model); tokenizer != nil {
+			tokens, err := m.tokenizeWith(tokenizer, prompt)
+			if err == nil {
+				return tokens, nil
+			}
+			if !m.config.Service.FallbackToEngine {
+				return nil, fmt.Errorf("tokenizer service failed for model %s: %w", model, err)
+			}
+			klog.V(2).Infof("TokenizerManager: tokenizer service failed for model %s, falling back to engine: %v", model, err)
+		} else if !m.config.Service.FallbackToEngine {
+			return nil, fmt.Errorf("tokenizer service unavailable for model %s", model)
+		}
+	}
+
 	tokenizer := m.GetTokenizer(model, pods)
 	if tokenizer == nil {
 		return nil, fmt.Errorf("no tokenizer available for model %s", model)
 	}
+	return m.tokenizeWith(tokenizer, prompt)
+}
 
+// tokenizeWith tokenizes a prompt using the given tokenizer.
+func (m *TokenizerManager) tokenizeWith(tokenizer Tokenizer, prompt *common.ChatMessage) ([]uint32, error) {
 	// Handle text prompts directly
 	if prompt.Text != "" {
 		tokens, err := tokenizer.TokenizeInputText(prompt.Text)

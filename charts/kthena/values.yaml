@@ -132,6 +132,48 @@ networking:
       # -- Enable Gateway API Inference Extension features.<br/>
       # Requires `gatewayAPI.enabled` to be true.
       inferenceExtension: false
+    # tokenizerService deploys the dedicated tokenizer service used by the
+    # kvcache-aware plugin to tokenize prompts without loading the inference engines.
+    tokenizerService:
+      # -- Enable the dedicated tokenizer service (wraps `vllm render`).
+      enabled: false
+      # -- Deployment mode: `sidecar` (runs in the router pod) or `standalone`
+      # (dedicated Deployment + Service, supports autoscaling).
+      mode: sidecar
+      # -- Port the tokenizer service listens on.
+      port: 8100
+      image:
+        # -- Image repository for the tokenizer service.
+        repository: ghcr.io/volcano-sh/kthena-tokenizer
+        # -- Image tag for the tokenizer service.
+        tag: latest
+        # -- Image pull policy for the tokenizer service.
+        pullPolicy: IfNotPresent
+      # -- Maximum number of concurrently loaded model tokenizers.
+      maxTokenizers: 8
+      # -- Extra environment variables for the tokenizer container (e.g. HF_TOKEN).
+      extraEnv: []
+      # -- Resources for the tokenizer container.
+      resources:
+        limits:
+          cpu: "2"
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+      # Standalone mode settings (ignored in sidecar mode).
+      standalone:
+        # -- Number of tokenizer service replicas in standalone mode.
+        replicas: 1
+        autoscaling:
+          # -- Enable a HorizontalPodAutoscaler for the standalone tokenizer service.
+          enabled: false
+          # -- Minimum replicas for autoscaling.
+          minReplicas: 1
+          # -- Maximum replicas for autoscaling.
+          maxReplicas: 5
+          # -- Target average CPU utilization percentage.
+          targetCPUUtilizationPercentage: 80
     # -- The router will drain all in-flight requests before forcefully closing connections.
     terminationGracePeriodSeconds: 330
     # -- Drain timeout for kthena-router graceful shutdown.
