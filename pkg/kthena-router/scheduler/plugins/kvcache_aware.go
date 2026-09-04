@@ -217,21 +217,29 @@ func normalizeIndexMode(mode string) string {
 	case kvCacheIndexModeMemory:
 		return kvCacheIndexModeMemory
 	default:
-		klog.Warningf("KVCacheAware: invalid indexMode %q, using %q", mode, kvCacheIndexModeRedis)
-		return kvCacheIndexModeRedis
+		klog.Fatalf("KVCacheAware: invalid indexMode %q, must be %q or %q",
+			mode, kvCacheIndexModeRedis, kvCacheIndexModeMemory)
+		return ""
 	}
 }
 
 // startMemoryMode starts the KV events listener, the sidecar registration
 // heartbeat, and the in-memory index GC.
 func (t *KVCacheAware) startMemoryMode(store datastore.Store, args KVCacheAwareArgs) {
+	if store == nil {
+		klog.Fatalf("KVCacheAware: memory mode requires a datastore for sidecar registration")
+	}
 	eventsPort := args.KVEventsPort
-	if eventsPort <= 0 || eventsPort > maxTokenizerPort {
+	if eventsPort == 0 {
 		eventsPort = defaultKVEventsPort
+	} else if eventsPort < 1 || eventsPort > maxTokenizerPort {
+		klog.Fatalf("KVCacheAware: invalid kvEventsPort %d, must be within [1, %d]", eventsPort, maxTokenizerPort)
 	}
 	runtimePort := args.RuntimePort
-	if runtimePort <= 0 || runtimePort > maxTokenizerPort {
+	if runtimePort == 0 {
 		runtimePort = defaultRuntimePort
+	} else if runtimePort < 1 || runtimePort > maxTokenizerPort {
+		klog.Fatalf("KVCacheAware: invalid runtimePort %d, must be within [1, %d]", runtimePort, maxTokenizerPort)
 	}
 	intervalSec := args.RegistrationIntervalSeconds
 	if intervalSec <= 0 {
@@ -252,10 +260,6 @@ func (t *KVCacheAware) startMemoryMode(store datastore.Store, args KVCacheAwareA
 	if err != nil {
 		klog.Errorf("KVCacheAware: memory mode enabled but router endpoint cannot be derived (%v); "+
 			"sidecar registration disabled, kvcache-aware scoring will not work", err)
-		return
-	}
-	if store == nil {
-		klog.Errorf("KVCacheAware: memory mode requires a datastore; sidecar registration disabled")
 		return
 	}
 

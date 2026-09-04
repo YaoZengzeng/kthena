@@ -41,6 +41,15 @@ class MemoryKVCacheManager:
     Implements the same interface as VLLMKVCacheRedisManager
     (add_blocks / remove_blocks / clear_all_blocks) so it can back
     VLLMKVCacheEventHandler and SGLangKVCacheEventHandler.
+
+    Unlike Redis mode, there is no shared, durable store here: every router
+    process keeps its own private in-memory copy of the index. In Redis mode
+    the sidecar writes each event once into Redis and can forget it, because
+    Redis itself is the authoritative state that any router — including one
+    that just (re)started or briefly lost connectivity — reads on demand. In
+    memory mode this class has to retain that authoritative state (_blocks)
+    itself, so it can replay it as a full snapshot to any router that starts
+    fresh, restarts, or missed a delta push.
     """
 
     def __init__(self, registry: Optional[RouterRegistry] = None,

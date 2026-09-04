@@ -28,6 +28,25 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// The in-memory KV index ("memory" index mode) replaces the shared Redis
+// block matrix with a per-router-process index kept in sync by push:
+//
+//  1. The runtime sidecar next to each inference engine subscribes to the
+//     engine's KV cache events, converts engine block hashes into
+//     standardized token-block hashes, and keeps the authoritative
+//     per-model block set for its pod
+//     (python/kthena/runtime/memory_kv_manager.py).
+//  2. Every router periodically registers with each runtime sidecar
+//     (kvcache_registration.go), announcing its push endpoint, a TTL, and a
+//     per-process generation.
+//  3. Sidecars push incremental stored/removed/cleared deltas to all
+//     registered routers, and push a full replace-style snapshot to a router
+//     whose process is new (generation change or expired registration) or
+//     whose previous push failed, so a router can always rebuild its index.
+//  4. Each router applies these events to its KVBlockMemoryIndex and scores
+//     pods by longest prefix match exactly like the Redis backend; a
+//     periodic GC drops entries not refreshed within the freshness window.
+//
 // KV event types pushed by the runtime sidecar in memory sync mode.
 // Kept in sync by hand with python/kthena/runtime/memory_kv_manager.py.
 const (
@@ -57,6 +76,11 @@ type KVEventPayload struct {
 	Events        []KVEvent `json:"events"`
 }
 
+// An owner is the pod identifier of the inference engine pod that holds a
+// block in its KV cache, in the "<podName>.<namespace>" form — the same
+// identifier the Redis backend stores as hash field names, so lookup results
+// flow through the shared scoring path unchanged.
+//
 // ownerModelKey indexes per-owner-per-model block sets for removal and snapshots.
 type ownerModelKey struct {
 	owner string
@@ -68,7 +92,7 @@ type ownerModelKey struct {
 // hash, per model, together with the time the block was last stored.
 type KVBlockMemoryIndex struct {
 	mu sync.RWMutex
-	// model -> block hash -> owner(pod.namespace) -> unix seconds of last store
+	// model -> block hash -> owner(podName.namespace) -> unix seconds of last store
 	blocks map[string]map[uint64]map[string]int64
 	// reverse index for cleared/snapshot events
 	ownerBlocks map[ownerModelKey]map[uint64]struct{}
@@ -216,6 +240,15 @@ func (idx *KVBlockMemoryIndex) RemoveOwner(owner string) {
 // gcStaleEntries drops ownership entries older than freshDuration, mirroring
 // the Redis backend GC so restarts or missed removal events cannot leave dead
 // entries behind forever.
+//
+// The full map is traversed while holding the write lock, blocking concurrent
+// lookups for the duration of the sweep. This is a deliberate simplicity
+// trade-off: the index size is bounded by the aggregate engine KV cache
+// capacity (one entry per cached block per pod), so a sweep is pure in-memory
+// work finishing in milliseconds even at millions of entries, and it runs
+// only once per kvCacheGCInterval (hourly). If the pause ever becomes a
+// problem, the sweep can be made incremental, like the cursor-based SCAN GC
+// of the Redis backend.
 func (idx *KVBlockMemoryIndex) gcStaleEntries(freshDuration time.Duration) {
 	cutoff := time.Now().Add(-freshDuration).Unix()
 
