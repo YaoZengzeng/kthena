@@ -43,6 +43,11 @@ type KVEvent struct {
 	Type        string   `json:"type"`
 	BlockHashes []uint64 `json:"block_hashes,omitempty"`
 	Timestamp   int64    `json:"timestamp,omitempty"`
+	// Timestamps optionally carries one unix-second store time per entry of
+	// BlockHashes. Snapshots use it to preserve original store times instead
+	// of re-stamping every block at snapshot time, which would defeat the
+	// engine-restart freshness filter.
+	Timestamps []int64 `json:"timestamps,omitempty"`
 }
 
 // KVEventPayload is the body of POST /kvcache/events pushed by a runtime sidecar.
@@ -86,9 +91,13 @@ func (idx *KVBlockMemoryIndex) Apply(payload *KVEventPayload) error {
 	defer idx.mu.Unlock()
 
 	for _, event := range payload.Events {
+		if len(event.Timestamps) > 0 && len(event.Timestamps) != len(event.BlockHashes) {
+			return fmt.Errorf("timestamps length %d does not match block_hashes length %d",
+				len(event.Timestamps), len(event.BlockHashes))
+		}
 		switch event.Type {
 		case kvEventStored:
-			idx.storeLocked(payload.ModelName, payload.PodIdentifier, event.BlockHashes, event.Timestamp)
+			idx.storeLocked(payload.ModelName, payload.PodIdentifier, event.BlockHashes, event.Timestamp, event.Timestamps)
 		case kvEventRemoved:
 			idx.removeLocked(payload.ModelName, payload.PodIdentifier, event.BlockHashes)
 		case kvEventCleared:
@@ -96,7 +105,7 @@ func (idx *KVBlockMemoryIndex) Apply(payload *KVEventPayload) error {
 		case kvEventSnapshot:
 			// A snapshot replaces everything known about this owner+model.
 			idx.clearLocked(payload.ModelName, payload.PodIdentifier)
-			idx.storeLocked(payload.ModelName, payload.PodIdentifier, event.BlockHashes, event.Timestamp)
+			idx.storeLocked(payload.ModelName, payload.PodIdentifier, event.BlockHashes, event.Timestamp, event.Timestamps)
 		default:
 			return fmt.Errorf("unknown event type %q", event.Type)
 		}
@@ -104,7 +113,10 @@ func (idx *KVBlockMemoryIndex) Apply(payload *KVEventPayload) error {
 	return nil
 }
 
-func (idx *KVBlockMemoryIndex) storeLocked(model, owner string, hashes []uint64, timestamp int64) {
+func (idx *KVBlockMemoryIndex) storeLocked(model, owner string, hashes []uint64, timestamp int64, timestamps []int64) {
+	if len(hashes) == 0 {
+		return
+	}
 	if timestamp <= 0 {
 		timestamp = time.Now().Unix()
 	}
@@ -119,13 +131,17 @@ func (idx *KVBlockMemoryIndex) storeLocked(model, owner string, hashes []uint64,
 		owned = make(map[uint64]struct{})
 		idx.ownerBlocks[key] = owned
 	}
-	for _, hash := range hashes {
+	for i, hash := range hashes {
 		owners, ok := modelBlocks[hash]
 		if !ok {
 			owners = make(map[string]int64)
 			modelBlocks[hash] = owners
 		}
-		owners[owner] = timestamp
+		ts := timestamp
+		if len(timestamps) > 0 && timestamps[i] > 0 {
+			ts = timestamps[i]
+		}
+		owners[owner] = ts
 		owned[hash] = struct{}{}
 	}
 }

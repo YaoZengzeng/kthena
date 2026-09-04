@@ -252,11 +252,14 @@ async def register_router(request: Request, background_tasks: BackgroundTasks) -
     - router_id: str - Unique identifier of the router instance (e.g. pod name)
     - endpoint: str - Base URL the runtime pushes KV events to,
       e.g. "http://10.0.0.5:9080"
+    - generation: str (optional) - Identifier of the router process; changes
+      when the router container restarts so a fresh snapshot is pushed
     - ttl_seconds: int (optional) - Registration TTL; routers must re-register
       before it expires (default: 90)
 
-    When the registration is new (or renewed after expiry), the current KV
-    block snapshot is pushed to the router in the background.
+    When the registration is new (renewed after expiry, or from a new process
+    generation), or when a previous event push to this router failed, the
+    current KV block snapshot is pushed to the router in the background.
     """
     state = get_app_state(request.app)
     if state.kv_sync_mode != KV_SYNC_MODE_MEMORY:
@@ -272,19 +275,26 @@ async def register_router(request: Request, background_tasks: BackgroundTasks) -
 
     router_id = body.get("router_id")
     endpoint = body.get("endpoint")
+    generation = body.get("generation", "")
     ttl_seconds = body.get("ttl_seconds", DEFAULT_ROUTER_TTL_SECONDS)
 
     try:
-        needs_snapshot = get_router_registry().register(router_id, endpoint, ttl_seconds)
+        needs_snapshot = get_router_registry().register(
+            router_id, endpoint, ttl_seconds, generation)
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if needs_snapshot and state.memory_kv_manager and state.pod_identifier:
-        background_tasks.add_task(
-            state.memory_kv_manager.push_snapshot,
-            endpoint.rstrip("/"),
-            state.pod_identifier,
-        )
+    if state.memory_kv_manager and state.pod_identifier:
+        endpoint_base = endpoint.rstrip("/")
+        # Also resend a snapshot when a previous push to this router failed,
+        # so a transient delivery failure cannot leave it divergent forever.
+        if needs_snapshot or state.memory_kv_manager.is_dirty(endpoint_base):
+            needs_snapshot = True
+            background_tasks.add_task(
+                state.memory_kv_manager.push_snapshot,
+                endpoint_base,
+                state.pod_identifier,
+            )
 
     return JSONResponse(
         content={"registered": True, "snapshot_scheduled": needs_snapshot},

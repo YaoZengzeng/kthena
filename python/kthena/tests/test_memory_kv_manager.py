@@ -138,6 +138,50 @@ async def test_push_snapshot_sends_full_index_to_single_router():
         compute_standardized_hash(token_ids[0:16]),
         compute_standardized_hash(token_ids[16:32]),
     ])
+    # Snapshots must preserve the original per-block store times so the
+    # router's engine-restart freshness filter keeps working.
+    stored = manager._blocks["qwen"]
+    assert event["timestamps"] == [stored[h] for h in event["block_hashes"]]
+
+
+@pytest.mark.asyncio
+async def test_push_snapshot_represents_cleared_model_as_empty():
+    manager, client = _make_manager(["http://router-a:9080"])
+    await manager.add_blocks("qwen", [111], "pod-1.default", list(range(16)))
+    await manager.clear_all_blocks("qwen", "pod-1.default")
+    client.post.reset_mock()
+
+    await manager.push_snapshot("http://router-new:9080", "pod-1.default")
+
+    payloads = _pushed_payloads(client)
+    assert len(payloads) == 1
+    event = payloads[0][1]["events"][0]
+    assert event["type"] == KV_EVENT_SNAPSHOT
+    assert event["block_hashes"] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_push_marks_endpoint_dirty_until_snapshot_succeeds():
+    manager, client = _make_manager(["http://router-a:9080"])
+    client.post.side_effect = RuntimeError("connection refused")
+
+    await manager.add_blocks("qwen", [111], "pod-1.default", list(range(16)))
+    assert manager.is_dirty("http://router-a:9080")
+
+    # A successful snapshot reconciles the endpoint and clears dirty state.
+    client.post.side_effect = None
+    await manager.push_snapshot("http://router-a:9080", "pod-1.default")
+    assert not manager.is_dirty("http://router-a:9080")
+
+
+@pytest.mark.asyncio
+async def test_failed_snapshot_keeps_endpoint_dirty():
+    manager, client = _make_manager(["http://router-a:9080"])
+    await manager.add_blocks("qwen", [111], "pod-1.default", list(range(16)))
+    client.post.side_effect = RuntimeError("connection refused")
+
+    await manager.push_snapshot("http://router-a:9080", "pod-1.default")
+    assert manager.is_dirty("http://router-a:9080")
 
 
 @pytest.mark.asyncio
@@ -177,6 +221,15 @@ def test_router_registry_register_and_expire(monkeypatch):
     clock["now"] += 120
     assert registry.active_endpoints() == []
     assert registry.register("router-a", "http://10.0.0.6:9080", ttl_seconds=60)
+
+    # A new process generation (router container restart with the same pod
+    # name and endpoint) triggers a snapshot again.
+    assert not registry.register(
+        "router-a", "http://10.0.0.6:9080", ttl_seconds=60)
+    assert registry.register(
+        "router-a", "http://10.0.0.6:9080", ttl_seconds=60, generation="gen-2")
+    assert not registry.register(
+        "router-a", "http://10.0.0.6:9080", ttl_seconds=60, generation="gen-2")
 
 
 def test_router_registry_rejects_invalid_input():

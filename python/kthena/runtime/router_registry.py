@@ -40,6 +40,9 @@ class RouterRegistration:
     router_id: str
     endpoint: str
     expires_at: float
+    # Identifies one router process; a restarted router container re-registers
+    # with a new generation even when its pod name (router_id) is unchanged.
+    generation: str = ""
 
 
 class RouterRegistry:
@@ -53,11 +56,14 @@ class RouterRegistry:
         self._routers: Dict[str, RouterRegistration] = {}
 
     def register(self, router_id: str, endpoint: str,
-                 ttl_seconds: int = DEFAULT_ROUTER_TTL_SECONDS) -> bool:
+                 ttl_seconds: int = DEFAULT_ROUTER_TTL_SECONDS,
+                 generation: str = "") -> bool:
         """Register or renew a router.
 
         Returns True when the router needs a full snapshot: it is new, its
-        previous registration expired, or it re-registered with a new endpoint.
+        previous registration expired, it re-registered with a new endpoint,
+        or it re-registered with a new process generation (e.g. after a
+        router container restart that lost the in-memory index).
         """
         if not router_id:
             raise ValueError("router_id must not be empty")
@@ -70,12 +76,14 @@ class RouterRegistry:
         needs_snapshot = (
             existing is None
             or existing.endpoint != endpoint
+            or existing.generation != generation
             or existing.expires_at <= now
         )
         self._routers[router_id] = RouterRegistration(
             router_id=router_id,
             endpoint=endpoint.rstrip("/"),
             expires_at=now + ttl,
+            generation=generation,
         )
         if needs_snapshot:
             logger.info(

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -118,6 +119,40 @@ func TestKVBlockMemoryIndex_Apply(t *testing.T) {
 			},
 		},
 		{
+			name: "empty snapshot clears previous owner state",
+			payloads: []KVEventPayload{
+				{
+					PodIdentifier: "pod-1.default",
+					ModelName:     "qwen",
+					Events:        []KVEvent{{Type: kvEventStored, BlockHashes: []uint64{1, 2}, Timestamp: now}},
+				},
+				{
+					PodIdentifier: "pod-1.default",
+					ModelName:     "qwen",
+					Events:        []KVEvent{{Type: kvEventSnapshot, Timestamp: now}},
+				},
+			},
+			queryModel:  "qwen",
+			queryHashes: []uint64{1, 2},
+			wantOwners:  map[uint64][]string{},
+		},
+		{
+			name: "mismatched timestamps length is rejected",
+			payloads: []KVEventPayload{{
+				PodIdentifier: "pod-1.default",
+				ModelName:     "qwen",
+				Events: []KVEvent{{
+					Type:        kvEventSnapshot,
+					BlockHashes: []uint64{1, 2},
+					Timestamps:  []int64{now},
+				}},
+			}},
+			wantErr:     true,
+			queryModel:  "qwen",
+			queryHashes: []uint64{1, 2},
+			wantOwners:  map[uint64][]string{},
+		},
+		{
 			name: "models are isolated",
 			payloads: []KVEventPayload{{
 				PodIdentifier: "pod-1.default",
@@ -185,6 +220,33 @@ func TestKVBlockMemoryIndex_Apply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestKVBlockMemoryIndex_SnapshotPreservesPerBlockTimestamps(t *testing.T) {
+	idx := NewKVBlockMemoryIndex()
+	tsOld := time.Now().Add(-2 * time.Hour).Unix()
+	tsNew := time.Now().Unix()
+
+	payload := KVEventPayload{
+		PodIdentifier: "pod-1.default",
+		ModelName:     "qwen",
+		Events: []KVEvent{{
+			Type:        kvEventSnapshot,
+			BlockHashes: []uint64{1, 2},
+			Timestamps:  []int64{tsOld, tsNew},
+		}},
+	}
+	if err := idx.Apply(&payload); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	got := idx.GetBlockOwners("qwen", []uint64{1, 2})
+	if want := strconv.FormatInt(tsOld, 10); got[1]["pod-1.default"] != want {
+		t.Errorf("hash 1 timestamp = %s, want %s", got[1]["pod-1.default"], want)
+	}
+	if want := strconv.FormatInt(tsNew, 10); got[2]["pod-1.default"] != want {
+		t.Errorf("hash 2 timestamp = %s, want %s", got[2]["pod-1.default"], want)
 	}
 }
 

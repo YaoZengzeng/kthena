@@ -509,23 +509,41 @@ Send the same prompt to the router multiple times. On the first request, the `kv
 
 ## How It Differs from Other Plugins
 
-| Feature                | `prefix-cache`            | `kvcache-aware`                   |
-| ---------------------- | ------------------------- | --------------------------------- |
-| Matching unit          | Byte-based prefix         | Token-block based                 |
-| Cache data source      | Router in-memory tracking | Redis (distributed)               |
-| Cross-pod coordination | No (local to router)      | Yes (via Redis)                   |
-| Cache truth source     | Router heuristic          | Actual engine KV events from vLLM |
-| Dependencies           | None                      | Redis + Runtime sidecar           |
+| Feature                | `prefix-cache`            | `kvcache-aware` (redis)           | `kvcache-aware` (memory)              |
+| ---------------------- | ------------------------- | --------------------------------- | ------------------------------------- |
+| Matching unit          | Byte-based prefix         | Token-block based                 | Token-block based                     |
+| Cache data source      | Router in-memory tracking | Redis (distributed)               | Router in-memory index (pushed)       |
+| Cross-pod coordination | No (local to router)      | Yes (via Redis)                   | Yes (sidecars push to every router)   |
+| Cache truth source     | Router heuristic          | Actual engine KV events from vLLM | Actual engine KV events from vLLM     |
+| Dependencies           | None                      | Redis + Runtime sidecar           | Runtime sidecar (no Redis)            |
 
 - Use **`prefix-cache`** when you want lightweight, dependency-free prefix matching for simple workloads.
 - Use **`kvcache-aware`** when you need accurate, distributed KV cache coordination backed by real engine cache events — particularly effective with long shared system prompts.
 
 ## Troubleshooting
 
+Common to both backends:
+
 | Symptom                                                  | Possible Cause                          | Resolution                                                                                        |
 | -------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Plugin scores are always 0                               | Redis not reachable from router         | Verify Redis connectivity and env vars (`REDIS_HOST`, `REDIS_PORT`)                               |
-| No Redis keys (`matrix:kv:block:*`)                      | Runtime sidecar not receiving KV events | Check that `VLLM_USE_V1=1` is set, runtime `--engine vllm` / `--pod` / `--model` args are correct |
-| Runtime log: `Failed to initialize Redis client`         | Redis not deployed or unreachable       | Deploy Redis and verify the `redis-config` ConfigMap exists in the same namespace                 |
+| No KV events in the runtime sidecar                      | Runtime sidecar not receiving KV events | Check that `VLLM_USE_V1=1` is set, runtime `--engine vllm` / `--pod` / `--model` args are correct |
 | Runtime log: `Pod identifier or model name not provided` | Missing `--pod` or `--model` args       | Ensure the runtime sidecar has `--pod $(POD_NAME).$(NAMESPACE)` and `--model <name>`              |
-| Router log: `redis client not initialized`               | Router cannot connect to Redis          | Check that Redis env vars are available to the router pod                                         |
+
+Redis backend (`indexMode: redis`):
+
+| Symptom                                          | Possible Cause                    | Resolution                                                                        |
+| ------------------------------------------------ | --------------------------------- | --------------------------------------------------------------------------------- |
+| Plugin scores are always 0                       | Redis not reachable from router   | Verify Redis connectivity and env vars (`REDIS_HOST`, `REDIS_PORT`)               |
+| No Redis keys (`matrix:kv:block:*`)              | Sidecar cannot write to Redis     | Verify sidecar Redis env vars and network access to the Redis service             |
+| Runtime log: `Failed to initialize Redis client` | Redis not deployed or unreachable | Deploy Redis and verify the `redis-config` ConfigMap exists in the same namespace |
+| Router log: `redis client not initialized`       | Router cannot connect to Redis    | Check that Redis env vars are available to the router pod                         |
+
+Memory backend (`indexMode: memory`):
+
+| Symptom                                                     | Possible Cause                                             | Resolution                                                                                             |
+| ----------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Plugin scores are always 0                                  | Sidecars cannot push to the router's KV events port        | Verify `POD_IP` is injected on the router deployment and the events port is reachable from model pods  |
+| Router log: `POD_IP environment variable is not set`        | Downward API env var missing on the router deployment      | Add `POD_IP` via the downward API (`status.podIP`) to the router container                             |
+| Runtime log: `Runtime is not in memory KV event sync mode`  | Sidecar not started in memory mode                         | Set `KV_EVENT_SYNC_MODE=memory` on the runtime sidecar                                                 |
+| Runtime log: `Failed to push KV events to router ...`       | Router events endpoint unreachable or router restarting    | Check network reachability; the sidecar resends a full snapshot on the router's next heartbeat         |
+| Scores stale after pod deletion                             | Missed removal events                                      | Entries are garbage-collected automatically; verify router logs for registration/heartbeat activity    |

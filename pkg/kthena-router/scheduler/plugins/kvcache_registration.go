@@ -19,10 +19,15 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,14 +42,22 @@ const (
 	defaultRuntimePort             = 9000
 	defaultRegistrationIntervalSec = 30
 	defaultRegistrationTTLSec      = 90
+
+	// maxConcurrentRegistrations bounds the fan-out of one registration sweep
+	// so that many unreachable pods cannot stretch a sweep past the TTL.
+	maxConcurrentRegistrations = 16
 )
 
 // routerRegistrationRequest is the body posted to the runtime sidecar's
 // /kvcache/routers/register endpoint. Kept in sync by hand with
 // python/kthena/runtime/app.py.
 type routerRegistrationRequest struct {
-	RouterID   string `json:"router_id"`
-	Endpoint   string `json:"endpoint"`
+	RouterID string `json:"router_id"`
+	Endpoint string `json:"endpoint"`
+	// Generation identifies one router process. It changes when the router
+	// container restarts (even with an unchanged pod name), so sidecars can
+	// detect that the in-memory index was lost and push a fresh snapshot.
+	Generation string `json:"generation"`
 	TTLSeconds int    `json:"ttl_seconds"`
 }
 
@@ -55,6 +68,7 @@ type routerRegistrationRequest struct {
 type kvRouterRegistrar struct {
 	store       datastore.Store
 	routerID    string
+	generation  string // unique per router process, see routerRegistrationRequest
 	endpoint    string // base URL the sidecar pushes events to, e.g. http://10.0.0.5:9080
 	runtimePort int
 	interval    time.Duration
@@ -67,12 +81,24 @@ func newKVRouterRegistrar(store datastore.Store, routerID, endpoint string,
 	return &kvRouterRegistrar{
 		store:       store,
 		routerID:    routerID,
+		generation:  newProcessGeneration(),
 		endpoint:    endpoint,
 		runtimePort: runtimePort,
 		interval:    time.Duration(intervalSeconds) * time.Second,
 		ttlSeconds:  ttlSeconds,
 		client:      &http.Client{Timeout: 3 * time.Second},
 	}
+}
+
+// newProcessGeneration returns an identifier that is unique per router
+// process, so a restarted container with the same pod name still triggers a
+// snapshot from every sidecar.
+func newProcessGeneration() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(buf)
 }
 
 // routerSelfEndpoint derives the base URL runtime sidecars should push KV
@@ -83,7 +109,7 @@ func routerSelfEndpoint(eventsPort int) (string, error) {
 	if podIP == "" {
 		return "", fmt.Errorf("POD_IP environment variable is not set")
 	}
-	return fmt.Sprintf("http://%s:%d", podIP, eventsPort), nil
+	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(eventsPort)), nil
 }
 
 // routerInstanceID identifies this router replica in sidecar registries.
@@ -116,21 +142,37 @@ func (r *kvRouterRegistrar) run(ctx context.Context) {
 
 func (r *kvRouterRegistrar) registerAll(ctx context.Context) {
 	pods := r.store.GetAllPods()
-	registered := 0
+	var (
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		registered int
+	)
+	// Bounded fan-out: registrations run concurrently so a sweep over many
+	// pods without a reachable sidecar stays well below the TTL.
+	sem := make(chan struct{}, maxConcurrentRegistrations)
 	for _, podInfo := range pods {
 		pod := podInfo.GetPod()
 		if pod == nil || pod.Status.PodIP == "" || pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		if err := r.registerWithPod(ctx, pod.Status.PodIP); err != nil {
-			// Pods without a runtime sidecar (or not in memory mode) are expected
-			// to fail; keep this quiet.
-			klog.V(4).Infof("KVCacheAware: registration with pod %s/%s (%s) failed: %v",
-				pod.Namespace, pod.Name, pod.Status.PodIP, err)
-			continue
-		}
-		registered++
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(namespace, name, podIP string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := r.registerWithPod(ctx, podIP); err != nil {
+				// Pods without a runtime sidecar (or not in memory mode) are expected
+				// to fail; keep this quiet.
+				klog.V(4).Infof("KVCacheAware: registration with pod %s/%s (%s) failed: %v",
+					namespace, name, podIP, err)
+				return
+			}
+			mu.Lock()
+			registered++
+			mu.Unlock()
+		}(pod.Namespace, pod.Name, pod.Status.PodIP)
 	}
+	wg.Wait()
 	klog.V(4).Infof("KVCacheAware: registered with %d/%d runtime sidecars", registered, len(pods))
 }
 
@@ -138,13 +180,14 @@ func (r *kvRouterRegistrar) registerWithPod(ctx context.Context, podIP string) e
 	body, err := json.Marshal(routerRegistrationRequest{
 		RouterID:   r.routerID,
 		Endpoint:   r.endpoint,
+		Generation: r.generation,
 		TTLSeconds: r.ttlSeconds,
 	})
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s:%d%s", podIP, r.runtimePort, runtimeRegisterPath)
+	url := "http://" + net.JoinHostPort(podIP, strconv.Itoa(r.runtimePort)) + runtimeRegisterPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
